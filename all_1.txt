@@ -1,0 +1,3347 @@
+#!/usr/bin/env bash
+
+# Copyright 2024 Hunan Yijing Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+cp -p /root/LinuxEnvConfig/jumpserver-ce-v4.10.1-x86_64.tar.gz /opt/
+cd /opt/
+tar -xf jumpserver-ce-v4.10.1-x86_64.tar.gz
+cd /opt/jumpserver-ce-v4.10.1-x86_64/
+cp -p /root/LinuxEnvConfig/image.tar.gz /root/
+
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# 脚本名称: all_1.sh
+# 功能描述: Linux 系统安全配置脚本（含SSH服务完整配置）
+# 适用系统: Ubuntu / Debian / CentOS / RHEL / Rocky / Arch / SUSE / Alpine / Gentoo
+# 作者: mingy
+
+set -euo pipefail
+
+readonly SCRIPT_VERSION="1.0.0"
+readonly LOG_FILE="/var/log/all_1_config.log"
+readonly BACKUP_DIR="/backup/all_1_$(date +%Y%m%d_%H%M%S)"
+
+readonly COLOUR_RESET='\e[0m'
+readonly aCOLOUR=(
+    '\e[38;5;154m'
+    '\e[1m'
+    '\e[90m'
+    '\e[91m'
+    '\e[33m'
+    '\e[34m'
+    '\e[35m'
+    '\e[36m'
+    '\e[37m'
+    '\e[92m'
+    '\e[93m'
+    '\e[94m'
+    '\e[95m'
+    '\e[96m'
+    '\e[97m'
+)
+
+readonly GREEN_LINE=" ${aCOLOUR[0]}─────────────────────────────────────────────────────$COLOUR_RESET"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+DISTRO_ID=""
+DISTRO_FAMILY=""
+PKG_MANAGER=""
+SSH_SERVICE_NAME=""
+SSH_PACKAGE=""
+FIREWALL_CMD=""
+
+cleanup() {
+    local exit_code=$?
+    if [ -n "${BACKUP_DIR:-}" ] && [ -d "/backup" ] && [ "$exit_code" -ne 0 ] 2>/dev/null; then
+        echo "[CLEANUP] 执行清理操作..." >&2
+        rm -rf "/tmp/all_1_$$" 2>/dev/null || true
+    fi
+}
+
+error_handler() {
+    local exit_code=${1:-$?}
+    local line_no=${2:-${LINENO:-?}}
+    local cmd="${BASH_COMMAND:-unknown}"
+
+    local code_desc=""
+    case "$exit_code" in
+        0)   code_desc="成功(不应触发此处理)" ;;
+        1)   code_desc="通用错误(Catch-all)" ;;
+        2)   code_desc="Shell内建命令误用(语法/参数错误)" ;;
+        126) code_desc="权限不足: 文件不可执行" ;;
+        127) code_desc="命令未找到: 拼写错误或PATH缺失" ;;
+        128) code_desc="exit命令参数无效" ;;
+        130) code_desc="被Ctrl+C中断(SIGINT)" ;;
+        137) code_desc="被SIGKILL杀死" ;;
+        143) code_desc="被SIGTERM终止" ;;
+        255) code_desc="退出状态超出范围" ;;
+        *)   code_desc="信号中断或未分类错误" ;;
+    esac
+
+    echo "" >&2
+    printf "%b[%bFATAL%b]%b 脚本异常退出\n" "${aCOLOUR[2]}" "${aCOLOUR[3]}" "${aCOLOUR[2]}" "$COLOUR_RESET" >&2
+    echo "  ─────────────────────────────────────" >&2
+    echo "  错误行号: ${line_no}" >&2
+    echo "  退出代码: ${exit_code} (${code_desc})" >&2
+    echo "  执行命令: ${cmd}" >&2
+    echo "  日志文件: ${LOG_FILE:-/var/log/all_1_config.log}" >&2
+    echo "  时间戳:   $(date '+%Y-%m-%d %H:%M:%S')" >&2
+    echo "  ─────────────────────────────────────" >&2
+    echo "  提示: tail -50 ${LOG_FILE:-/var/log/all_1_config.log}" >&2
+    echo "  提示: bash -x $0 可启用调试模式" >&2
+
+    if [ -f "${LOG_FILE:-/var/log/all_1_config.log}" ]; then
+        {
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] [FATAL] 异常退出 - 行号:${line_no} 退出码:${exit_code}(${code_desc}) 命令:${cmd}"
+        } >> "${LOG_FILE:-/var/log/all_1_config.log}" 2>/dev/null || true
+    fi
+
+    cleanup
+    exit "$exit_code"
+}
+
+log() {
+    local level="$1"
+    shift
+    local message="$*"
+    local timestamp
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$timestamp] [$level] $message" >> "$LOG_FILE" 2>/dev/null || true
+}
+
+Show() {
+    local level=$1
+    local value=$2
+
+    case $level in
+        0)
+            printf "%b[%b  OK  %b]%b %s\n" "${aCOLOUR[2]}" "${aCOLOUR[0]}" "${aCOLOUR[2]}" "$COLOUR_RESET" "$value"
+            log "INFO" "$value"
+            ;;
+        1)
+            printf "%b[%bFAILED%b]%b %s\n" "${aCOLOUR[2]}" "${aCOLOUR[3]}" "${aCOLOUR[2]}" "$COLOUR_RESET" "$value"
+            log "ERROR" "$value"
+            ;;
+        2)
+            printf "%b[%b INFO %b]%b %s\n" "${aCOLOUR[2]}" "${aCOLOUR[0]}" "${aCOLOUR[2]}" "$COLOUR_RESET" "$value"
+            log "INFO" "$value"
+            ;;
+        3)
+            printf "%b[%bNOTICE%b]%b %s\n" "${aCOLOUR[2]}" "${aCOLOUR[4]}" "${aCOLOUR[2]}" "$COLOUR_RESET" "$value"
+            log "WARN" "$value"
+            ;;
+    esac
+}
+
+action() {
+    local exit_status=$?
+    local success_msg=$1
+    local error_msg=$2
+
+    if [ "$exit_status" -eq 0 ]; then
+        Show 0 "$success_msg"
+    else
+        Show 1 "$error_msg"
+    fi
+}
+
+trap 'error_handler $? ${LINENO}' ERR
+trap 'cleanup' EXIT
+trap 'echo "" >&2; echo "收到中断信号，正在安全退出..." >&2; cleanup; exit 130' SIGINT SIGTERM
+
+backup_file() {
+    local src="$1"
+    if [ ! -f "$src" ]; then
+        Show 2 "源文�?$src 不存在，跳过备份"
+        return 0
+    fi
+
+    mkdir -p "$BACKUP_DIR"
+    local dest="${BACKUP_DIR}/$(basename "$src").$(date +%Y%m%d_%H%M%S).bak"
+    if cp "$src" "$dest"; then
+        Show 2 "已备�?$src -> $dest"
+        log "INFO" "备份 $src -> $dest"
+    else
+        Show 3 "备份 $src 失败"
+        log "ERROR" "备份 $src 失败"
+    fi
+}
+
+detect_os() {
+    Show 2 "检测操作系统类�?.."
+
+    if [ ! -f /etc/os-release ]; then
+        Show 1 "无法检测操作系统，/etc/os-release 文件不存在"
+        exit 1
+    fi
+
+    DISTRO_ID=$(grep '^ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"' | tr '[:upper:]' '[:lower:]')
+
+    case "$DISTRO_ID" in
+        ubuntu|debian|kali|linuxmint|pop)
+            DISTRO_FAMILY="debian"
+            PKG_MANAGER="apt"
+            SSH_PACKAGE="openssh-server"
+            SSH_SERVICE_NAME="ssh"
+            ;;
+        centos|rhel|rocky|almalinux|fedora|ol|anolis)
+            DISTRO_FAMILY="rhel"
+            SSH_PACKAGE="openssh-server"
+            SSH_SERVICE_NAME="sshd"
+            if command -v dnf &>/dev/null; then
+                PKG_MANAGER="dnf"
+            else
+                PKG_MANAGER="yum"
+            fi
+            ;;
+        arch|manjaro|endeavouros|artix|garuda|arcolinux)
+            DISTRO_FAMILY="arch"
+            PKG_MANAGER="pacman"
+            SSH_PACKAGE="openssh"
+            SSH_SERVICE_NAME="sshd"
+            ;;
+        opensuse-tumbleweed|opensuse-leap|opensuse|sles|sled)
+            DISTRO_FAMILY="suse"
+            PKG_MANAGER="zypper"
+            SSH_PACKAGE="openssh"
+            SSH_SERVICE_NAME="sshd"
+            ;;
+        alpine)
+            DISTRO_FAMILY="alpine"
+            PKG_MANAGER="apk"
+            SSH_PACKAGE="openssh"
+            SSH_SERVICE_NAME="sshd"
+            ;;
+        gentoo)
+            DISTRO_FAMILY="gentoo"
+            PKG_MANAGER="emerge"
+            SSH_PACKAGE="net-misc/openssh"
+            SSH_SERVICE_NAME="sshd"
+            ;;
+        *)
+            DISTRO_FAMILY="unknown"
+            if command -v apt-get &>/dev/null; then
+                PKG_MANAGER="apt"; DISTRO_FAMILY="debian"; SSH_PACKAGE="openssh-server"; SSH_SERVICE_NAME="ssh"
+            elif command -v dnf &>/dev/null; then
+                PKG_MANAGER="dnf"; DISTRO_FAMILY="rhel"; SSH_PACKAGE="openssh-server"; SSH_SERVICE_NAME="sshd"
+            elif command -v yum &>/dev/null; then
+                PKG_MANAGER="yum"; DISTRO_FAMILY="rhel"; SSH_PACKAGE="openssh-server"; SSH_SERVICE_NAME="sshd"
+            elif command -v pacman &>/dev/null; then
+                PKG_MANAGER="pacman"; DISTRO_FAMILY="arch"; SSH_PACKAGE="openssh"; SSH_SERVICE_NAME="sshd"
+            elif command -v zypper &>/dev/null; then
+                PKG_MANAGER="zypper"; DISTRO_FAMILY="suse"; SSH_PACKAGE="openssh"; SSH_SERVICE_NAME="sshd"
+            elif command -v apk &>/dev/null; then
+                PKG_MANAGER="apk"; DISTRO_FAMILY="alpine"; SSH_PACKAGE="openssh"; SSH_SERVICE_NAME="sshd"
+            else
+                Show 1 "Cannot detect package manager: $DISTRO_ID"
+                exit 1
+            fi
+            ;;
+    esac
+
+    Show 0 "操作系统: $DISTRO_ID (家族: $DISTRO_FAMILY, 包管理器: $PKG_MANAGER)"
+    log "INFO" "检测到操作系统: $DISTRO_ID, 家族: $DISTRO_FAMILY, 包管理器: $PKG_MANAGER"
+}
+
+detect_firewall() {
+    if command -v firewall-cmd &>/dev/null; then
+        FIREWALL_CMD="firewall-cmd"
+    elif command -v ufw &>/dev/null; then
+        FIREWALL_CMD="ufw"
+    elif command -v iptables &>/dev/null; then
+        FIREWALL_CMD="iptables"
+    else
+        FIREWALL_CMD=""
+    fi
+
+    if [ -n "$FIREWALL_CMD" ]; then
+        Show 2 "检测到防火墙: $FIREWALL_CMD"
+    else
+        Show 3 "未检测到防火墙工具"
+    fi
+}
+
+pkg_install() {
+    local packages="$*"
+    Show 2 "安装软件: $packages"
+
+    case "$PKG_MANAGER" in
+        apt)
+            apt-get update -y
+            # shellcheck disable=SC2086
+            apt-get install -y $packages
+            ;;
+        dnf)
+            # shellcheck disable=SC2086
+            dnf install -y $packages
+            ;;
+        yum)
+            # shellcheck disable=SC2086
+            yum install -y $packages
+            ;;
+        pacman)
+            # shellcheck disable=SC2086
+            pacman -Sy --noconfirm $packages
+            ;;
+        zypper)
+            # shellcheck disable=SC2086
+            zypper --non-interactive install $packages
+            ;;
+        apk)
+            # shellcheck disable=SC2086
+            apk add $packages
+            ;;
+        emerge)
+            # shellcheck disable=SC2086
+            emerge $packages
+            ;;
+        *)
+            Show 1 "未知的包管理器: $PKG_MANAGER"
+            return 1
+            ;;
+    esac
+}
+
+pkg_check_installed() {
+    local package="$1"
+    case "$PKG_MANAGER" in
+        apt)
+            dpkg -s "$package" &>/dev/null
+            ;;
+        dnf|yum)
+            rpm -q "$package" &>/dev/null
+            ;;
+        pacman)
+            pacman -Qi "$package" &>/dev/null
+            ;;
+        zypper)
+            rpm -q "$package" &>/dev/null
+            ;;
+        apk)
+            apk info -e "$package" &>/dev/null
+            ;;
+        emerge)
+            equery list "$package" &>/dev/null 2>&1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+open_firewall_port() {
+    local port="$1"
+    local proto="${2:-tcp}"
+
+    if [ -z "$FIREWALL_CMD" ]; then
+        Show 3 "未检测到防火墙，跳过端口 $port 开�?"
+        return 0
+    fi
+
+    case "$FIREWALL_CMD" in
+        firewall-cmd)
+            firewall-cmd --permanent --add-port="${port}/${proto}" 2>/dev/null || true
+            firewall-cmd --reload 2>/dev/null || true
+            Show 0 "已在firewalld中开放端�?${port}/${proto}"
+            ;;
+        ufw)
+            ufw allow "${port}/${proto}" 2>/dev/null || true
+            Show 0 "已在ufw中开放端�?${port}/${proto}"
+            ;;
+        iptables)
+            iptables -A INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null || true
+            if command -v iptables-save &>/dev/null; then
+                iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+            fi
+            Show 0 "已在iptables中开放端�?${port}/${proto}"
+            ;;
+    esac
+}
+
+configure_selinux() {
+    if [ "$DISTRO_FAMILY" != "rhel" ]; then
+        return 0
+    fi
+
+    Show 2 "配置SELinux..."
+
+    if [ ! -f /etc/selinux/config ]; then
+        Show 3 "SELinux配置文件不存在，跳过"
+        return 0
+    fi
+
+    backup_file /etc/selinux/config
+
+    local current_mode
+    current_mode=$(getenforce 2>/dev/null || echo "Unknown")
+    Show 2 "当前SELinux模式: $current_mode"
+
+    echo ""
+    echo "请选择SELinux模式:"
+    echo "1. enforcing (强制模式，最安全)"
+    echo "2. permissive (宽容模式，仅记录不阻�?"
+    echo "3. disabled (禁用，不推荐)"
+    read -r -p "请选择(1-3, 默认1): " selinux_choice
+    selinux_choice=${selinux_choice:-1}
+
+    local selinux_mode
+    case $selinux_choice in
+        2) selinux_mode="permissive" ;;
+        3) selinux_mode="disabled" ;;
+        *) selinux_mode="enforcing" ;;
+    esac
+
+    sed -i "s/^SELINUX=.*/SELINUX=${selinux_mode}/" /etc/selinux/config
+
+    if [ "$selinux_mode" = "disabled" ] || [ "$selinux_mode" = "permissive" ]; then
+        setenforce 0 2>/dev/null || true
+    elif [ "$selinux_mode" = "enforcing" ]; then
+        setenforce 1 2>/dev/null || true
+    fi
+
+    Show 0 "SELinux已设置为: $selinux_mode"
+}
+
+configure_firewall_service() {
+    Show 2 "配置防火墙服�?.."
+
+    echo ""
+    echo "请选择防火墙配�?"
+    echo "1. 启用并配置防火墙 (推荐)"
+    echo "2. 关闭防火�?(不推�?"
+    echo "3. 保持当前状�?"
+    read -r -p "请选择(1-3, 默认1): " fw_choice
+    fw_choice=${fw_choice:-1}
+
+    case $fw_choice in
+        1)
+            case "$FIREWALL_CMD" in
+                firewall-cmd)
+                    systemctl start firewalld 2>/dev/null || true
+                    systemctl enable firewalld 2>/dev/null || true
+                    Show 0 "firewalld已启用并设置为开机自�?"
+                    ;;
+                ufw)
+                    ufw --force enable 2>/dev/null || true
+                    Show 0 "ufw已启�?"
+                    ;;
+                *)
+                    Show 3 "未检测到支持的防火墙工具，跳�?"
+                    ;;
+            esac
+            ;;
+        2)
+            case "$FIREWALL_CMD" in
+                firewall-cmd)
+                    systemctl stop firewalld 2>/dev/null || true
+                    systemctl disable firewalld 2>/dev/null || true
+                    Show 3 "firewalld已关闭并禁用开机自�?"
+                    ;;
+                ufw)
+                    ufw disable 2>/dev/null || true
+                    Show 3 "ufw已关�?"
+                    ;;
+                *)
+                    Show 3 "未检测到支持的防火墙工具，跳�?"
+                    ;;
+            esac
+            ;;
+        3)
+            Show 2 "保持防火墙当前状�?"
+            ;;
+    esac
+}
+
+configure_root_password() {
+    local root_pass
+    local pass_confirm
+
+    echo ""
+    echo "===== 配置root用户密码 ====="
+    echo ""
+
+    while true; do
+        read -rsp "请输入root用户密码(需包含大小写字母、数字和特殊符号，长度不少于8�?: " root_pass
+        echo
+
+        if [ ${#root_pass} -lt 8 ]; then
+            Show 3 "密码长度不能少于8位，请重新输�?"
+            continue
+        fi
+
+        if ! echo "$root_pass" | grep -qE '[A-Z]'; then
+            Show 3 "密码必须包含至少一个大写字母，请重新输�?"
+            continue
+        fi
+
+        if ! echo "$root_pass" | grep -qE '[a-z]'; then
+            Show 3 "密码必须包含至少一个小写字母，请重新输�?"
+            continue
+        fi
+
+        if ! echo "$root_pass" | grep -qE '[0-9]'; then
+            Show 3 "密码必须包含至少一个数字，请重新输�?"
+            continue
+        fi
+
+        if ! echo "$root_pass" | grep -qE '[^a-zA-Z0-9]'; then
+            Show 3 "密码必须包含至少一个特殊符号，请重新输�?"
+            continue
+        fi
+
+        read -rsp "请再次输入密码确�? " pass_confirm
+        echo
+
+        if [ "$root_pass" != "$pass_confirm" ]; then
+            Show 3 "两次输入的密码不一致，请重新输�?"
+            continue
+        fi
+
+        break
+    done
+
+    echo "root:${root_pass}" | chpasswd
+
+    if [ $? -eq 0 ]; then
+        Show 0 "root用户密码配置成功"
+        log "INFO" "root用户密码配置成功"
+    else
+        Show 1 "root用户密码配置失败"
+        log "ERROR" "root用户密码配置失败"
+        exit 1
+    fi
+}
+
+install_ssh() {
+    Show 2 "检查SSH服务安装状�?.."
+
+    if pkg_check_installed "$SSH_PACKAGE"; then
+        Show 0 "已安�?$SSH_PACKAGE"
+    else
+        Show 2 "$SSH_PACKAGE 未安装，正在安装..."
+        pkg_install "$SSH_PACKAGE"
+        action "安装 $SSH_PACKAGE 成功" "安装 $SSH_PACKAGE 失败"
+    fi
+
+    Show 2 "启动SSH服务..."
+    systemctl start "$SSH_SERVICE_NAME" 2>/dev/null
+    action "启动SSH服务成功" "启动SSH服务失败"
+
+    Show 2 "设置SSH服务开机自�?.."
+    systemctl enable "$SSH_SERVICE_NAME" 2>/dev/null
+    action "设置SSH服务开机自启成�? "设置SSH服务开机自启失�?
+}
+
+generate_ssh_keys() {
+    echo ""
+    echo "===== SSH密钥配置 ====="
+    echo ""
+    echo "是否为当前用户生成SSH密钥�?"
+    echo "1. 生成 ed25519 密钥 (推荐，更安全更短)"
+    echo "2. 生成 RSA 4096位密�?(兼容性更�?"
+    echo "3. 跳过密钥生成"
+    read -r -p "请选择(1-3, 默认1): " key_choice
+    key_choice=${key_choice:-1}
+
+    local key_type=""
+    local key_args=""
+
+    case $key_choice in
+        1)
+            key_type="ed25519"
+            key_args="-t ed25519"
+            ;;
+        2)
+            key_type="rsa4096"
+            key_args="-t rsa -b 4096"
+            ;;
+        3)
+            Show 2 "跳过SSH密钥生成"
+            return 0
+            ;;
+        *)
+            key_type="ed25519"
+            key_args="-t ed25519"
+            ;;
+    esac
+
+    local ssh_dir="${HOME}/.ssh"
+    mkdir -p "$ssh_dir"
+    chmod 700 "$ssh_dir"
+
+    local key_file="${ssh_dir}/id_${key_type%%[0-9]*}"
+    if [ "$key_type" = "rsa4096" ]; then
+        key_file="${ssh_dir}/id_rsa"
+    fi
+
+    if [ -f "$key_file" ]; then
+        echo ""
+        Show 3 "已存在SSH密钥文件: $key_file"
+        read -r -p "是否覆盖? (y/n): " overwrite_key
+        if [[ "$overwrite_key" != "y" && "$overwrite_key" != "Y" ]]; then
+            Show 2 "保留现有SSH密钥"
+            return 0
+        fi
+        rm -f "$key_file" "${key_file}.pub"
+    fi
+
+    Show 2 "生成 ${key_type} SSH密钥�?.."
+    # shellcheck disable=SC2086
+    ssh-keygen $key_args -f "$key_file" -N ""
+    action "SSH密钥生成成功 ($key_file)" "SSH密钥生成失败"
+
+    chmod 600 "$key_file"
+    chmod 644 "${key_file}.pub"
+
+    local authorized_keys="${ssh_dir}/authorized_keys"
+    if [ ! -f "$authorized_keys" ]; then
+        touch "$authorized_keys"
+        chmod 600 "$authorized_keys"
+    fi
+
+    if ! grep -qF "$(cat "${key_file}.pub")" "$authorized_keys" 2>/dev/null; then
+        cat "${key_file}.pub" >> "$authorized_keys"
+        Show 0 "公钥已添加到 authorized_keys"
+    fi
+
+    Show 0 "SSH密钥配置完成"
+    Show 2 "私钥位置: $key_file"
+    Show 2 "公钥位置: ${key_file}.pub"
+    Show 3 "请妥善保管私钥，切勿泄露"
+}
+
+configure_ssh() {
+    local ssh_port
+    local permit_root
+    local password_auth
+    local allow_users
+    local sshd_config="/etc/ssh/sshd_config"
+
+    echo ""
+    echo "===== SSH服务安全配置 ====="
+    echo ""
+
+    backup_file "$sshd_config"
+    cp "$sshd_config" "${sshd_config}.bak"
+
+    read -r -p "请输入SSH端口�?默认22): " ssh_port
+    ssh_port=${ssh_port:-22}
+
+    if ! [[ "$ssh_port" =~ ^[0-9]+$ ]] || [ "$ssh_port" -lt 1 ] || [ "$ssh_port" -gt 65535 ]; then
+        Show 3 "端口号无效，使用默认端口22"
+        ssh_port=22
+    fi
+
+    echo ""
+    echo "是否允许root用户通过SSH登录?"
+    echo "1. 允许root登录 (PermitRootLogin yes)"
+    echo "2. 禁止root登录 (PermitRootLogin no) [推荐]"
+    read -r -p "请选择(1-2, 默认2): " permit_root
+    permit_root=${permit_root:-2}
+
+    local permit_root_value
+    case $permit_root in
+        1) permit_root_value="yes" ;;
+        *) permit_root_value="no" ;;
+    esac
+
+    echo ""
+    echo "是否启用密码登录?"
+    echo "1. 启用密码登录 (PasswordAuthentication yes)"
+    echo "2. 禁用密码登录，仅使用密钥认证 (PasswordAuthentication no) [推荐]"
+    read -r -p "请选择(1-2, 默认1): " password_auth
+    password_auth=${password_auth:-1}
+
+    local password_auth_value
+    case $password_auth in
+        2)
+            password_auth_value="no"
+            echo ""
+            Show 3 "警告: 禁用密码登录前，请确保已配置SSH密钥认证，否则将无法登录!"
+            read -r -p "确认禁用密码登录? (y/n): " confirm_disable_pass
+            if [[ "$confirm_disable_pass" != "y" && "$confirm_disable_pass" != "Y" ]]; then
+                Show 2 "已取消禁用密码登�?"
+                password_auth_value="yes"
+            fi
+            ;;
+        *)
+            password_auth_value="yes"
+            ;;
+    esac
+
+    echo ""
+    read -r -p "是否限制SSH登录用户? 输入允许的用户名(多个用空格分隔，留空不限�?: " allow_users
+
+    Show 2 "正在修改SSH配置文件..."
+
+    sed -i "s/^#\?Port .*/Port $ssh_port/" "$sshd_config"
+    sed -i "s/^#\?PermitRootLogin .*/PermitRootLogin $permit_root_value/" "$sshd_config"
+    sed -i "s/^#\?PasswordAuthentication .*/PasswordAuthentication $password_auth_value/" "$sshd_config"
+    sed -i "s/^#\?PubkeyAuthentication .*/PubkeyAuthentication yes/" "$sshd_config"
+    sed -i 's/^#\?MaxAuthTries .*/MaxAuthTries 4/' "$sshd_config"
+    sed -i 's/^#\?LoginGraceTime .*/LoginGraceTime 60/' "$sshd_config"
+    sed -i 's/^#\?PermitEmptyPasswords .*/PermitEmptyPasswords no/' "$sshd_config"
+    sed -i 's/^#\?X11Forwarding .*/X11Forwarding no/' "$sshd_config"
+    sed -i 's/^#\?ClientAliveInterval .*/ClientAliveInterval 300/' "$sshd_config"
+    sed -i 's/^#\?ClientAliveCountMax .*/ClientAliveCountMax 2/' "$sshd_config"
+    sed -i 's/^#\?AllowTcpForwarding .*/AllowTcpForwarding no/' "$sshd_config"
+    sed -i 's/^#\?GatewayPorts .*/GatewayPorts no/' "$sshd_config"
+    sed -i 's/^#\?StrictModes .*/StrictModes yes/' "$sshd_config"
+
+    if ! grep -q "^Port " "$sshd_config"; then
+        echo "Port $ssh_port" >> "$sshd_config"
+    fi
+
+    if ! grep -q "^PermitRootLogin " "$sshd_config"; then
+        echo "PermitRootLogin $permit_root_value" >> "$sshd_config"
+    fi
+
+    if ! grep -q "^PasswordAuthentication " "$sshd_config"; then
+        echo "PasswordAuthentication $password_auth_value" >> "$sshd_config"
+    fi
+
+    if ! grep -q "^PubkeyAuthentication " "$sshd_config"; then
+        echo "PubkeyAuthentication yes" >> "$sshd_config"
+    fi
+
+    if ! grep -q "^MaxAuthTries " "$sshd_config"; then
+        echo "MaxAuthTries 4" >> "$sshd_config"
+    fi
+
+    if ! grep -q "^LoginGraceTime " "$sshd_config"; then
+        echo "LoginGraceTime 60" >> "$sshd_config"
+    fi
+
+    if ! grep -q "^PermitEmptyPasswords " "$sshd_config"; then
+        echo "PermitEmptyPasswords no" >> "$sshd_config"
+    fi
+
+    if ! grep -q "^X11Forwarding " "$sshd_config"; then
+        echo "X11Forwarding no" >> "$sshd_config"
+    fi
+
+    if ! grep -q "^ClientAliveInterval " "$sshd_config"; then
+        echo "ClientAliveInterval 300" >> "$sshd_config"
+    fi
+
+    if ! grep -q "^ClientAliveCountMax " "$sshd_config"; then
+        echo "ClientAliveCountMax 2" >> "$sshd_config"
+    fi
+
+    if ! grep -q "^AllowTcpForwarding " "$sshd_config"; then
+        echo "AllowTcpForwarding no" >> "$sshd_config"
+    fi
+
+    if ! grep -q "^GatewayPorts " "$sshd_config"; then
+        echo "GatewayPorts no" >> "$sshd_config"
+    fi
+
+    if ! grep -q "^StrictModes " "$sshd_config"; then
+        echo "StrictModes yes" >> "$sshd_config"
+    fi
+
+    if [ -n "$allow_users" ]; then
+        sed -i '/^AllowUsers/d' "$sshd_config"
+        echo "AllowUsers $allow_users" >> "$sshd_config"
+        Show 0 "已限制SSH登录用户: $allow_users"
+    fi
+
+    if [ "$ssh_port" != "22" ]; then
+        open_firewall_port "$ssh_port" "tcp"
+    else
+        open_firewall_port "22" "tcp"
+    fi
+
+    echo ""
+    echo "SSH安全配置完成:"
+    echo "  端口: $ssh_port"
+    echo "  允许root登录: $permit_root_value"
+    echo "  密码登录: $password_auth_value"
+    echo "  公钥认证: yes"
+    echo "  最大认证尝�? 4"
+    echo "  登录宽限时间: 60�?"
+    echo "  空密码登�? 禁止"
+    echo "  X11转发: 禁止"
+    echo "  客户端存活检测间�? 300�?"
+    echo "  客户端存活检测次�? 2"
+    echo "  TCP转发: 禁止"
+    echo "  网关端口: 禁止"
+    echo "  严格模式: 启用"
+    if [ -n "$allow_users" ]; then
+        echo "  允许登录用户: $allow_users"
+    fi
+
+    log "INFO" "SSH配置完成 - 端口:$ssh_port, root登录:$permit_root_value, 密码登录:$password_auth_value"
+}
+
+install_fail2ban() {
+    echo ""
+    echo "===== 防暴力破解配�?====="
+    echo ""
+    echo "是否安装并配置fail2ban防止SSH暴力破解?"
+    echo "1. 安装并配置fail2ban (推荐)"
+    echo "2. 跳过"
+    read -r -p "请选择(1-2, 默认1): " f2b_choice
+    f2b_choice=${f2b_choice:-1}
+
+    if [ "$f2b_choice" != "1" ]; then
+        Show 2 "跳过fail2ban安装"
+        return 0
+    fi
+
+    local f2b_package="fail2ban"
+    if pkg_check_installed "$f2b_package"; then
+        Show 0 "fail2ban已安�?"
+    else
+        Show 2 "正在安装fail2ban..."
+        pkg_install "$f2b_package"
+        action "安装fail2ban成功" "安装fail2ban失败"
+    fi
+
+    local jail_local="/etc/fail2ban/jail.local"
+    local jail_default="/etc/fail2ban/jail.conf"
+
+    if [ -f "$jail_local" ]; then
+        backup_file "$jail_local"
+    fi
+
+    cat > "$jail_local" << 'F2BCONF'
+[DEFAULT]
+bantime = 3600
+findtime = 600
+maxretry = 5
+backend = systemd
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 3
+bantime = 3600
+findtime = 600
+F2BCONF
+
+    if [ "$DISTRO_FAMILY" = "rhel" ]; then
+        sed -i 's|logpath = /var/log/auth.log|logpath = /var/log/secure|' "$jail_local"
+    fi
+
+    local ssh_port_config
+    ssh_port_config=$(grep "^Port " /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' || echo "22")
+    if [ -n "$ssh_port_config" ] && [ "$ssh_port_config" != "22" ]; then
+        sed -i "s|port = ssh|port = $ssh_port_config|" "$jail_local"
+    fi
+
+    systemctl restart fail2ban 2>/dev/null
+    systemctl enable fail2ban 2>/dev/null
+    action "fail2ban配置完成并已启动" "fail2ban配置失败"
+
+    log "INFO" "fail2ban安装配置完成"
+}
+
+restart_and_enable_ssh() {
+    echo ""
+    Show 2 "正在验证SSH配置..."
+
+    if ! sshd -t 2>/dev/null; then
+        Show 1 "SSH配置文件语法检查失败，正在恢复备份..."
+        cp /etc/ssh/sshd_config.bak /etc/ssh/sshd_config
+        Show 2 "已恢复备份配�?"
+        log "ERROR" "SSH配置语法检查失败，已恢复备�?"
+
+        Show 2 "重新启动SSH服务..."
+        systemctl restart "$SSH_SERVICE_NAME" 2>/dev/null
+        action "SSH服务重启成功" "SSH服务重启失败（请手动检查）"
+        return 1
+    fi
+
+    Show 0 "SSH配置语法检查通过"
+
+    Show 2 "重启SSH服务..."
+    if systemctl restart "$SSH_SERVICE_NAME" 2>/dev/null; then
+        Show 0 "SSH服务重启成功"
+    else
+        Show 1 "SSH服务重启失败，正在恢复备�?.."
+        cp /etc/ssh/sshd_config.bak /etc/ssh/sshd_config
+        systemctl restart "$SSH_SERVICE_NAME" 2>/dev/null || true
+        Show 3 "已恢复备份并重启SSH服务"
+        log "ERROR" "SSH服务重启失败，已恢复备份"
+        return 1
+    fi
+
+    Show 2 "设置SSH服务开机自�?.."
+    if systemctl enable "$SSH_SERVICE_NAME" 2>/dev/null; then
+        Show 0 "SSH服务已设置为开机自启动"
+    else
+        Show 3 "SSH服务开机自启动设置失败"
+    fi
+
+    echo ""
+    Show 2 "SSH服务状�?"
+    systemctl status "$SSH_SERVICE_NAME" --no-pager 2>/dev/null | head -5 || true
+
+    log "INFO" "SSH服务重启并设置自启完�?"
+}
+
+show_ssh_summary() {
+    local sshd_config="/etc/ssh/sshd_config"
+
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "          SSH服务配置摘要"
+    printf "%b\n" "${GREEN_LINE}"
+
+    local port
+    port=$(grep "^Port " "$sshd_config" 2>/dev/null | awk '{print $2}' || echo "22")
+    local permit_root
+    permit_root=$(grep "^PermitRootLogin " "$sshd_config" 2>/dev/null | awk '{print $2}' || echo "yes")
+    local pass_auth
+    pass_auth=$(grep "^PasswordAuthentication " "$sshd_config" 2>/dev/null | awk '{print $2}' || echo "yes")
+    local pubkey_auth
+    pubkey_auth=$(grep "^PubkeyAuthentication " "$sshd_config" 2>/dev/null | awk '{print $2}' || echo "yes")
+    local max_auth
+    max_auth=$(grep "^MaxAuthTries " "$sshd_config" 2>/dev/null | awk '{print $2}' || echo "4")
+    local allow_users
+    allow_users=$(grep "^AllowUsers " "$sshd_config" 2>/dev/null | sed 's/^AllowUsers[[:space:]]*//' || echo "无限制")
+
+    echo "  监听端口:           $port"
+    echo "  root登录:           $permit_root"
+    echo "  密码认证:           $pass_auth"
+    echo "  公钥认证:           $pubkey_auth"
+    echo "  最大认证尝�?       $max_auth"
+    echo "  允许登录用户:       ${allow_users:-无限制}"
+    echo ""
+    echo "  SSH连接示例: ssh -p $port user@<服务器IP>"
+    printf "%b\n" "${GREEN_LINE}"
+}
+
+cleanup() {
+    local exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        log "ERROR" "脚本异常退出，退出码: $exit_code"
+        echo ""
+        Show 3 "脚本异常退出，请查看日�? $LOG_FILE"
+    fi
+}
+
+install_xp_panel() {
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "          小皮面板 (PhpStudy) 安装"
+    printf "%b\n" "${GREEN_LINE}"
+    echo ""
+    Show 2 "小皮面板是一款免费的Linux服务器管理面板，支持一键配置LAMP/LNMP环境"
+    echo ""
+
+    echo "请确认安装方�?"
+    echo "1. 自动安装 (推荐)"
+    echo "2. 返回上级菜单"
+    read -r -p "请选择(1-2, 默认1): " xp_choice
+    xp_choice=${xp_choice:-1}
+
+    if [ "$xp_choice" != "1" ]; then
+        Show 2 "取消小皮面板安装"
+        return 0
+    fi
+
+    Show 2 "检查系统环�?.."
+
+    if ! command -v wget &>/dev/null && ! command -v curl &>/dev/null; then
+        Show 2 "未检测到wget或curl，正在安�?.."
+        pkg_install wget curl
+    fi
+
+    local install_url="https://dl.xp.cn/dl/xp/install.sh"
+    local install_script="/tmp/xp_install.sh"
+
+    Show 2 "下载小皮面板安装脚本..."
+    if command -v curl &>/dev/null; then
+        curl -fsSL -o "$install_script" "$install_url"
+    elif command -v wget &>/dev/null; then
+        wget -q -O "$install_script" "$install_url"
+    else
+        Show 1 "无法下载安装脚本，请手动安装"
+        return 1
+    fi
+
+    if [ ! -f "$install_script" ]; then
+        Show 1 "安装脚本下载失败"
+        return 1
+    fi
+
+    chmod +x "$install_script"
+    Show 0 "安装脚本下载成功"
+
+    Show 2 "开放小皮面板默认端�?9080)..."
+    open_firewall_port "9080" "tcp"
+    open_firewall_port "80" "tcp"
+    open_firewall_port "443" "tcp"
+
+    echo ""
+    Show 2 "即将执行小皮面板安装脚本..."
+    printf "%b注意: 安装过程中可能需要交互确认，请按照提示操作%b\n" "${YELLOW}" "${NC}"
+    echo ""
+    read -r -p "按回车键开始安装，输入q取消: " start_install
+    if [[ "$start_install" == "q" || "$start_install" == "Q" ]]; then
+        Show 2 "取消安装"
+        rm -f "$install_script"
+        return 0
+    fi
+
+    bash "$install_script"
+    local install_result=$?
+
+    rm -f "$install_script"
+
+    if [ $install_result -ne 0 ]; then
+        Show 1 "小皮面板安装失败，退出码: $install_result"
+        Show 2 "请检查网络连接或手动执行: curl -O https://dl.xp.cn/dl/xp/install.sh && bash install.sh"
+        return 1
+    fi
+
+    echo ""
+    Show 0 "小皮面板安装完成"
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "  小皮面板安装信息:"
+    echo "  管理面板: http://<服务器IP>:9080"
+    echo "  默认账号: admin"
+    echo "  首次登录请查看安装输出获取初始密�?"
+    echo ""
+    echo "  常用操作:"
+    echo "  - 软件管理: 安装Nginx/Apache/MySQL/PHP�?"
+    echo "  - 网站管理: 创建和管理网�?"
+    echo "  - 数据库管�? 管理MySQL/PostgreSQL"
+    echo "  - FTP管理: 管理FTP账号"
+    echo ""
+    echo "  卸载命令: xp stop && xp uninstall"
+    printf "%b\n" "${GREEN_LINE}"
+
+    log "INFO" "小皮面板安装完成"
+}
+
+install_bt_panel() {
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "          宝塔面板 安装"
+    printf "%b\n" "${GREEN_LINE}"
+    echo ""
+    Show 2 "宝塔面板是一款流行的Linux服务器管理面�?"
+    echo ""
+
+    echo "请确认安装方�?"
+    echo "1. 自动安装 (推荐)"
+    echo "2. 返回上级菜单"
+    read -r -p "请选择(1-2, 默认1): " bt_choice
+    bt_choice=${bt_choice:-1}
+
+    if [ "$bt_choice" != "1" ]; then
+        Show 2 "取消宝塔面板安装"
+        return 0
+    fi
+
+    Show 2 "检查系统环�?.."
+
+    if ! command -v wget &>/dev/null && ! command -v curl &>/dev/null; then
+        Show 2 "未检测到wget或curl，正在安�?.."
+        pkg_install wget curl
+    fi
+
+    local bt_url="https://download.bt.cn/install/install_panel.sh"
+    local bt_script="/tmp/bt_install.sh"
+
+    Show 2 "下载宝塔面板安装脚本..."
+    if command -v curl &>/dev/null; then
+        curl -fsSL -o "$bt_script" "$bt_url"
+    elif command -v wget &>/dev/null; then
+        wget -q -O "$bt_script" "$bt_url"
+    else
+        Show 1 "无法下载安装脚本，请手动安装"
+        return 1
+    fi
+
+    if [ ! -f "$bt_script" ]; then
+        Show 1 "安装脚本下载失败"
+        return 1
+    fi
+
+    chmod +x "$bt_script"
+    Show 0 "安装脚本下载成功"
+
+    Show 2 "开放宝塔面板默认端�?8888)..."
+    open_firewall_port "8888" "tcp"
+    open_firewall_port "80" "tcp"
+    open_firewall_port "443" "tcp"
+    open_firewall_port "20" "tcp"
+    open_firewall_port "21" "tcp"
+    open_firewall_port "39000-40000" "tcp"
+
+    echo ""
+    Show 2 "即将执行宝塔面板安装脚本..."
+    printf "%b注意: 安装过程中可能需要交互确认，请按照提示操作%b\n" "${YELLOW}" "${NC}"
+    echo ""
+    read -r -p "按回车键开始安装，输入q取消: " start_install
+    if [[ "$start_install" == "q" || "$start_install" == "Q" ]]; then
+        Show 2 "取消安装"
+        rm -f "$bt_script"
+        return 0
+    fi
+
+    bash "$bt_script" ed8484bec
+    local install_result=$?
+
+    rm -f "$bt_script"
+
+    if [ $install_result -ne 0 ]; then
+        Show 1 "宝塔面板安装失败，退出码: $install_result"
+        Show 2 "请检查网络连接或手动执行: curl -sSO https://download.bt.cn/install/install_panel.sh && bash install_panel.sh ed8484bec"
+        return 1
+    fi
+
+    echo ""
+    Show 0 "宝塔面板安装完成"
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "  宝塔面板安装信息:"
+    echo "  管理面板: http://<服务器IP>:8888"
+    echo "  首次登录请查看安装输出获取初始账号密�?"
+    echo ""
+    echo "  常用命令:"
+    echo "  - 查看面板信息: bt default"
+    echo "  - 重启面板: bt restart"
+    echo "  - 修改面板端口: bt 14"
+    echo "  - 修改面板密码: bt 5"
+    echo "  - 卸载: bt stop && curl https://download.bt.cn/install/bt-uninstall.sh | bash"
+    printf "%b\n" "${GREEN_LINE}"
+
+    log "INFO" "宝塔面板安装完成"
+}
+
+install_jumpserver() {
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "          JumpServer 堡垒机安�?"
+    printf "%b\n" "${GREEN_LINE}"
+    echo ""
+    Show 2 "JumpServer是开源的堡垒�?运维安全审计系统)"
+    echo ""
+
+    local jdk_src="/root/LinuxEnvConfig/jdk-8u421-linux-x64.tar.gz"
+    local jms_pkg="/root/LinuxEnvConfig/jumpserver-ce-v4.10.1-x86_64.tar.gz"
+    local jms_dir="jumpserver-ce-v4.10.1-x86_64"
+
+    if [ ! -f "$jdk_src" ]; then
+        Show 3 "未找到JDK安装�? $jdk_src"
+        read -r -p "请输入JDK tar.gz文件路径(留空跳过): " jdk_src_input
+        [ -n "$jdk_src_input" ] && jdk_src="$jdk_src_input" || jdk_src=""
+    fi
+
+    if [ ! -f "$jms_pkg" ]; then
+        Show 3 "未找到JumpServer安装�? $jms_pkg"
+        read -r -p "请输入JumpServer tar.gz文件路径(留空跳过): " jms_pkg_input
+        [ -n "$jms_pkg_input" ] && jms_pkg="$jms_pkg_input" || jms_pkg=""
+    fi
+
+    if [ -z "$jdk_src" ] && [ -z "$jms_pkg" ]; then
+        Show 1 "缺少必要的安装文件，无法继续"
+        return 1
+    fi
+
+    if [ -n "$jdk_src" ] && [ -f "$jdk_src" ]; then
+        Show 2 "复制JDK�?opt目录..."
+        cp "$jdk_src" /opt/
+        if [ $? -eq 0 ]; then
+            Show 0 "JDK已复制到 /opt/"
+            local jdk_filename
+            jdk_filename=$(basename "$jdk_src")
+            Show 2 "解压JDK..."
+            tar -xf "/opt/$jdk_filename" -C /opt/
+            if [ $? -eq 0 ]; then
+                Show 0 "JDK解压完成"
+            else
+                Show 1 "JDK解压失败"
+            fi
+        else
+            Show 1 "JDK复制失败，请检查文件权�?"
+        fi
+    fi
+
+    if [ -n "$jms_pkg" ] && [ -f "$jms_pkg" ]; then
+        Show 2 "解压JumpServer安装�?.."
+        cd /root/ || { Show 1 "无法进入/root/目录"; return 1; }
+        tar -xf "$jms_pkg"
+        if [ $? -ne 0 ]; then
+            Show 1 "JumpServer解压失败"
+            cd - >/dev/null || true
+            return 1
+        fi
+        Show 0 "JumpServer解压完成"
+
+        if [ ! -d "$jms_dir" ]; then
+            local found_dir
+            found_dir=$(find /root/ -maxdepth 1 -type d -name "jumpserver-ce-*" | head -1)
+            if [ -n "$found_dir" ]; then
+                jms_dir=$(basename "$found_dir")
+            else
+                Show 1 "未找到JumpServer解压目录"
+                cd - >/dev/null || true
+                return 1
+            fi
+        fi
+
+        Show 2 "进入JumpServer目录: $jms_dir"
+        cd "$jms_dir" || { Show 1 "无法进入目录 $jms_dir"; cd - >/dev/null || true; return 1; }
+
+        Show 2 "执行JumpServer安装..."
+        ./jmsctl.sh install
+        if [ $? -ne 0 ]; then
+            Show 1 "JumpServer安装失败"
+            cd - >/dev/null || true
+            return 1
+        fi
+        Show 0 "JumpServer安装完成"
+
+        Show 2 "停止HTTP服务(避免端口冲突)..."
+        sudo systemctl stop httpd 2>/dev/null || true
+        sudo systemctl stop nginx 2>/dev/null || true
+
+        Show 2 "启动JumpServer..."
+        ./jmsctl.sh start
+        if [ $? -eq 0 ]; then
+            Show 0 "JumpServer启动成功"
+        else
+            Show 1 "JumpServer启动失败，请检查日�?"
+        fi
+
+        cd - >/dev/null || true
+    fi
+
+    echo ""
+    local server_ip
+    server_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    [ -z "$server_ip" ] && server_ip=$(ip route get 1 2>/dev/null | awk '{print $7; exit}')
+    [ -z "$server_ip" ] && server_ip="<服务器IP>"
+
+    local jms_admin_user="admin"
+    local jms_admin_pass="admin"
+
+    if [ -f "/root/$jms_dir/.env" ]; then
+        local env_user
+        env_user=$(grep "^CORE_ADMIN_USER=" "/root/$jms_dir/.env" 2>/dev/null | cut -d'=' -f2)
+        [ -n "$env_user" ] && jms_admin_user="$env_user"
+
+        local env_pass
+        env_pass=$(grep "^CORE_ADMIN_PASSWORD=" "/root/$jms_dir/.env" 2>/dev/null | cut -d'=' -f2)
+        [ -n "$env_pass" ] && jms_admin_pass="$env_pass"
+    fi
+
+    printf "%b\n" "${GREEN_LINE}"
+    echo "  JumpServer 安装信息:"
+    echo "  访问地址: http://${server_ip}"
+    echo "  登录账号: ${jms_admin_user}"
+    echo "  登录密码: ${jms_admin_pass}"
+    echo "  安装目录: /root/$jms_dir"
+    echo "  管理命令: cd /root/$jms_dir && ./jmsctl.sh"
+    printf "%b\n" "${GREEN_LINE}"
+
+    log "INFO" "JumpServer安装完成 - 访问地址: http://${server_ip}, 账号: ${jms_admin_user}"
+}
+
+_jms_find_dir() {
+    local jms_dir=""
+    for dir in /root/jumpserver-ce-v4.10.16-x86_64 /opt/jumpserver-ce-v4.10.16-x86_64; do
+        if [ -d "$dir" ]; then
+            jms_dir="$dir"
+            break
+        fi
+    done
+
+    if [ -z "$jms_dir" ]; then
+        for dir in /root/jumpserver-ce-* /opt/jumpserver-ce-* /opt/jumpserver-installer-* /root/jumpserver-installer-*; do
+            if [ -d "$dir" ]; then
+                jms_dir="$dir"
+                break
+            fi
+        done
+    fi
+
+    if [ -z "$jms_dir" ] && [ -d "/opt/jumpserver" ]; then
+        jms_dir="/opt/jumpserver"
+    fi
+
+    if [ -z "$jms_dir" ]; then
+        for dir in /opt/*/ /root/*/; do
+            if [ -f "${dir}jmsctl.sh" ]; then
+                jms_dir="${dir%/}"
+                break
+            fi
+        done
+    fi
+
+    echo "$jms_dir"
+}
+
+_jms_validate() {
+    local jms_dir="$1"
+
+    if [ -z "$jms_dir" ]; then
+        Show 1 "未找到JumpServer安装目录"
+        read -r -p "请输入JumpServer安装目录路径: " jms_dir
+    fi
+
+    if [ ! -d "$jms_dir" ]; then
+        Show 1 "目录不存�? $jms_dir"
+        return 1
+    fi
+
+    if [ ! -f "$jms_dir/jmsctl.sh" ]; then
+        Show 1 "未找到管理脚�? $jms_dir/jmsctl.sh"
+        return 1
+    fi
+
+    if [ ! -x "$jms_dir/jmsctl.sh" ]; then
+        chmod +x "$jms_dir/jmsctl.sh" 2>/dev/null || {
+            Show 1 "管理脚本无执行权限且无法修改: $jms_dir/jmsctl.sh"
+            return 1
+        }
+    fi
+
+    echo "$jms_dir"
+    return 0
+}
+
+_jms_start() {
+    local jms_dir
+    jms_dir=$(_jms_find_dir)
+
+    jms_dir=$(_jms_validate "$jms_dir") || return 1
+
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "          启动JumpServer堡垒机服�?"
+    printf "%b\n" "${GREEN_LINE}"
+    echo ""
+
+    Show 2 "JumpServer安装目录: $jms_dir"
+
+    cd "$jms_dir" || { Show 1 "无法进入目录 $jms_dir"; return 1; }
+
+    Show 2 "正在启动JumpServer服务..."
+    ./jmsctl.sh start
+    local start_rc=$?
+
+    if [ $start_rc -eq 0 ]; then
+        Show 0 "JumpServer服务启动成功"
+    else
+        Show 1 "JumpServer服务启动失败 (退出码: $start_rc)"
+        cd - >/dev/null || true
+        return 1
+    fi
+
+    Show 2 "等待服务就绪(8�?..."
+    sleep 8
+
+    Show 2 "检查服务运行状�?"
+    ./jmsctl.sh status 2>&1 | head -20
+
+    log "INFO" "JumpServer堡垒机服务已启动"
+    cd - >/dev/null || true
+}
+
+_jms_stop() {
+    local jms_dir
+    jms_dir=$(_jms_find_dir)
+
+    jms_dir=$(_jms_validate "$jms_dir") || return 1
+
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "          停止JumpServer堡垒机服�?"
+    printf "%b\n" "${GREEN_LINE}"
+    echo ""
+
+    Show 2 "JumpServer安装目录: $jms_dir"
+
+    cd "$jms_dir" || { Show 1 "无法进入目录 $jms_dir"; return 1; }
+
+    Show 2 "正在停止JumpServer服务..."
+    ./jmsctl.sh stop
+    local stop_rc=$?
+
+    if [ $stop_rc -eq 0 ]; then
+        Show 0 "JumpServer服务已停�?"
+    else
+        Show 3 "JumpServer服务停止返回非零退出码，正在验�?.."
+    fi
+
+    sleep 2
+
+    Show 2 "检查服务是否完全终�?.."
+    ./jmsctl.sh status 2>&1 | head -10
+
+    local residual
+    residual=$(docker ps --filter "name=jms_" --format "{{.Names}}" 2>/dev/null | wc -l || echo 0)
+    if [ "$residual" -gt 0 ]; then
+        Show 3 "检测到 ${residual} 个残留容器，正在清理..."
+        docker ps --filter "name=jms_" --format "{{.Names}}" | xargs -r docker stop 2>/dev/null || true
+        docker ps -a --filter "name=jms_" --format "{{.Names}}" | xargs -r docker rm 2>/dev/null || true
+        Show 0 "残留容器已清�?"
+    else
+        Show 0 "未检测到残留进程/容器"
+    fi
+
+    log "INFO" "JumpServer堡垒机服务已停止"
+    cd - >/dev/null || true
+}
+
+_jms_status() {
+    local jms_dir
+    jms_dir=$(_jms_find_dir)
+
+    jms_dir=$(_jms_validate "$jms_dir") || return 1
+
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "          JumpServer堡垒机服务状�?"
+    printf "%b\n" "${GREEN_LINE}"
+    echo ""
+
+    Show 2 "安装目录: $jms_dir"
+
+    cd "$jms_dir" || { Show 1 "无法进入目录 $jms_dir"; return 1; }
+
+    Show 2 "服务状�?"
+    echo ""
+    ./jmsctl.sh status 2>&1 | head -30
+
+    echo ""
+    Show 2 "容器状�?"
+    docker ps --filter "name=jms_" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo "  无法获取容器信息"
+
+    log "INFO" "查看JumpServer状�?"
+    cd - >/dev/null || true
+}
+
+_jms_configure_domains() {
+    local jms_dir
+    jms_dir=$(_jms_find_dir)
+
+    jms_dir=$(_jms_validate "$jms_dir") || return 1
+
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "          JumpServer DOMAINS 配置"
+    printf "%b\n" "${GREEN_LINE}"
+    echo ""
+
+    Show 2 "JumpServer安装目录: $jms_dir"
+
+    if [ ! -f "$jms_dir/.env" ]; then
+        Show 1 "未找到环境配置文�? $jms_dir/.env"
+        return 1
+    fi
+
+    local server_ip
+    server_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    [ -z "$server_ip" ] && server_ip=$(ip route get 1 2>/dev/null | awk '{print $7; exit}')
+
+    cd "$jms_dir" || { Show 1 "无法进入目录 $jms_dir"; return 1; }
+
+    echo ""
+    echo "步骤1: 停止JumpServer服务"
+    ./jmsctl.sh stop 2>/dev/null && Show 0 "JumpServer服务已停�? || Show 3 "JumpServer服务停止失败或未在运�?
+
+    echo ""
+    echo "步骤2: 备份环境配置文件"
+    local backup_date
+    backup_date=$(date +%Y%m%d)
+    cp .env ".env.bak.${backup_date}"
+    if [ $? -eq 0 ]; then
+        Show 0 "配置文件已备�? .env.bak.${backup_date}"
+    else
+        Show 1 "配置文件备份失败"
+        cd - >/dev/null || true
+        return 1
+    fi
+
+    echo ""
+    echo "步骤3: 修改DOMAINS配置"
+    local current_domains
+    current_domains=$(grep "^DOMAINS=" .env 2>/dev/null | cut -d'=' -f2-)
+    printf "%b当前DOMAINS配置: ${current_domains}%b\n" "${YELLOW}" "${NC}"
+
+    local domains_value
+    if [ -n "$server_ip" ]; then
+        printf "%b检测到服务器IP: ${server_ip}%b\n" "${GREEN}" "${NC}"
+        read -r -p "请输入DOMAINS�?�?${server_ip}:8080, 留空使用默认): " domains_input
+        if [ -n "$domains_input" ]; then
+            domains_value="$domains_input"
+        else
+            domains_value="${server_ip}:8080"
+        fi
+    else
+        read -r -p "请输入DOMAINS�?格式: IP地址:端口): " domains_input
+        if [ -z "$domains_input" ]; then
+            Show 1 "DOMAINS值不能为�?"
+            cd - >/dev/null || true
+            return 1
+        fi
+        domains_value="$domains_input"
+    fi
+
+    if grep -q "^DOMAINS=" .env; then
+        sed -i "s|^DOMAINS=.*|DOMAINS=${domains_value}|" .env
+    else
+        echo "DOMAINS=${domains_value}" >> .env
+    fi
+    Show 0 "DOMAINS已设置为: ${domains_value}"
+
+    echo ""
+    echo "步骤4: 验证DOMAINS配置"
+    grep -n "DOMAINS" .env
+    if [ $? -eq 0 ]; then
+        Show 0 "DOMAINS配置验证通过"
+    else
+        Show 1 "DOMAINS配置验证失败"
+        cd - >/dev/null || true
+        return 1
+    fi
+
+    echo ""
+    echo "步骤5: 启动JumpServer服务"
+    ./jmsctl.sh start
+    if [ $? -eq 0 ]; then
+        Show 0 "JumpServer服务启动成功"
+    else
+        Show 1 "JumpServer服务启动失败"
+        cd - >/dev/null || true
+        return 1
+    fi
+
+    echo ""
+    echo "步骤6: 查看服务运行状�?"
+    sleep 5
+    ./jmsctl.sh status
+
+    echo ""
+    local final_ip
+    final_ip=$(echo "$domains_value" | cut -d':' -f1)
+    local final_port
+    final_port=$(echo "$domains_value" | cut -d':' -f2)
+    [ -z "$final_port" ] && final_port="80"
+
+    printf "%b\n" "${GREEN_LINE}"
+    echo "  JumpServer DOMAINS 配置完成:"
+    echo "  DOMAINS: ${domains_value}"
+    echo "  访问地址: http://${final_ip}:${final_port}"
+    echo "  配置文件: $jms_dir/.env"
+    echo "  备份文件: $jms_dir/.env.bak.${backup_date}"
+    printf "%b\n" "${GREEN_LINE}"
+
+    cd - >/dev/null || true
+    log "INFO" "JumpServer DOMAINS配置完成: ${domains_value}"
+}
+
+manage_jumpserver() {
+    local jms_dir
+    jms_dir=$(_jms_find_dir)
+
+    while true; do
+        echo ""
+        printf "%b\n" "${GREEN_LINE}"
+        echo "          JumpServer堡垒机管�?"
+        printf "%b\n" "${GREEN_LINE}"
+        echo ""
+
+        if [ -n "$jms_dir" ]; then
+            printf "  安装目录: %b$jms_dir%b\n" "${GREEN}" "${NC}"
+            echo ""
+        fi
+
+        echo "1. 配置DOMAINS"
+        echo "2. 启动堡垒机服�?"
+        echo "3. 停止堡垒机服�?"
+        echo "4. 查看服务状�?"
+        echo "5. 返回主菜�?"
+        echo ""
+        read -r -p "$(printf "%b请选择(1-5): %b\n" "${GREEN}" "${NC}")" jms_choice
+
+        case $jms_choice in
+            1)
+                _jms_configure_domains
+                ;;
+            2)
+                _jms_start
+                ;;
+            3)
+                _jms_stop
+                ;;
+            4)
+                _jms_status
+                ;;
+            5)
+                break
+                ;;
+            *)
+                Show 3 "无效的选择"
+                ;;
+        esac
+    done
+}
+
+_get_compose_cmd() {
+    if command -v docker-compose &>/dev/null; then
+        echo "docker-compose"
+    elif docker compose version &>/dev/null 2>&1; then
+        echo "docker compose"
+    else
+        echo ""
+    fi
+}
+
+_waf_install() {
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "          安装WAF (雷池/SafeLine)"
+    printf "%b\n" "${GREEN_LINE}"
+    echo ""
+    Show 2 "雷池(SafeLine)是长亭科技开源的WAF解决方案"
+    Show 2 "支持离线部署和在线部署两种方�?"
+    echo ""
+
+    if ! command -v docker &>/dev/null; then
+        Show 1 "Docker未安装，请先安装Docker"
+        return 1
+    fi
+
+    if ! docker info &>/dev/null 2>&1; then
+        Show 1 "Docker服务未运行，请先启动Docker"
+        return 1
+    fi
+
+    local compose_cmd
+    compose_cmd=$(_get_compose_cmd)
+    if [ -z "$compose_cmd" ]; then
+        Show 1 "docker-compose未安装，请先安装"
+        return 1
+    fi
+
+    echo "请选择WAF部署方式:"
+    echo "1. 离线部署 (使用本地镜像�?"
+    echo "2. 在线部署 (从华为云镜像源拉�?"
+    echo "3. 返回"
+    read -r -p "请选择(1-3, 默认1): " waf_deploy_choice
+    waf_deploy_choice=${waf_deploy_choice:-1}
+
+    if [ "$waf_deploy_choice" = "3" ]; then
+        return 0
+    fi
+
+    Show 2 "Step 1: 准备WAF镜像..."
+    if [ "$waf_deploy_choice" = "1" ]; then
+        if [ -f "/root/LinuxEnvConfig/image.tar.gz" ]; then
+            cp /root/LinuxEnvConfig/image.tar.gz /root/
+            Show 0 "镜像包已复制�?/root/image.tar.gz"
+        elif [ -f "/root/image.tar.gz" ]; then
+            Show 2 "镜像包已存在�?/root/image.tar.gz，跳过复�?"
+        else
+            Show 1 "未找到镜像包 /root/LinuxEnvConfig/image.tar.gz"
+            return 1
+        fi
+
+        Show 2 "加载Docker镜像..."
+        # shellcheck disable=SC2002
+        cat /root/image.tar.gz | gzip -d | docker load
+        if [ $? -ne 0 ]; then
+            Show 1 "镜像加载失败，请检查文件格�?"
+            return 1
+        fi
+        Show 0 "Docker镜像加载完成"
+    else
+        Show 2 "在线部署模式，镜像将在启动时自动拉取..."
+    fi
+
+    Show 2 "Step 2: 创建WAF数据目录和环境配置文�?.."
+    mkdir -p /data/safeline
+    cd /data/safeline/ || { Show 1 "无法进入目录 /data/safeline/"; return 1; }
+
+    local pg_password
+    read -r -p "请输入PostgreSQL密码 [Safeline123!]: " pg_password
+    pg_password=${pg_password:-Safeline123!}
+
+    local mgt_port
+    read -r -p "请输入管理界面端�?[9443]: " mgt_port
+    mgt_port=${mgt_port:-9443}
+
+    local subnet_prefix
+    read -r -p "请输入子网前缀 [172.22.222]: " subnet_prefix
+    subnet_prefix=${subnet_prefix:-172.22.222}
+
+    local image_prefix="swr.cn-east-3.myhuaweicloud.com/chaitin-safeline"
+
+    cat > .env << SAFEOF
+SAFELINE_DIR=/data/safeline
+IMAGE_TAG=latest
+MGT_PORT=${mgt_port}
+POSTGRES_PASSWORD=${pg_password}
+SUBNET_PREFIX=${subnet_prefix}
+IMAGE_PREFIX=${image_prefix}
+ARCH_SUFFIX=
+RELEASE=
+REGION=
+SAFEOF
+
+    chmod 600 .env
+    Show 0 "环境配置文件 .env 已创�?"
+
+    Show 2 "Step 3: 准备compose文件..."
+    if [ ! -f "compose.yaml" ] && [ ! -f "docker-compose.yaml" ] && [ ! -f "docker-compose.yml" ]; then
+        if [ -f "/root/LinuxEnvConfig/compose.yaml" ]; then
+            cp /root/LinuxEnvConfig/compose.yaml /data/safeline/
+            Show 0 "已从本地复制compose.yaml"
+        else
+            Show 2 "尝试下载compose.yaml..."
+            if curl -fsSL "https://waf.chaitin.com/release/latest/compose.yaml" -o compose.yaml 2>/dev/null; then
+                Show 0 "compose.yaml 下载成功"
+            else
+                Show 3 "compose.yaml 自动下载失败"
+                printf "%b请手动将compose.yaml文件上传�?/data/safeline/ 目录%b\n" "${YELLOW}" "${NC}"
+                read -r -p "文件已就�? 按回车继续，输入q退�? " ready_check
+                if [[ "$ready_check" == "q" || "$ready_check" == "Q" ]]; then
+                    cd - >/dev/null || true
+                    return 1
+                fi
+            fi
+        fi
+    else
+        Show 2 "检测到已有compose配置文件"
+    fi
+
+    if [ ! -f "compose.yaml" ] && [ ! -f "docker-compose.yaml" ] && [ ! -f "docker-compose.yml" ]; then
+        Show 1 "未找到compose配置文件，无法启动容�?"
+        cd - >/dev/null || true
+        return 1
+    fi
+
+    Show 2 "Step 4: 启动WAF容器..."
+    $compose_cmd up -d
+    if [ $? -ne 0 ]; then
+        Show 1 "容器启动失败，请检查配置和镜像"
+        cd - >/dev/null || true
+        return 1
+    fi
+
+    Show 2 "等待容器启动(10�?..."
+    sleep 10
+
+    $compose_cmd ps
+    Show 0 "容器启动完成"
+
+    Show 2 "Step 5: 配置防火墙放行WAF端口..."
+    open_firewall_port "${mgt_port}" "tcp"
+    open_firewall_port "80" "tcp"
+    Show 0 "防火墙已放行端口 ${mgt_port}/tcp 和 80/tcp"
+
+    docker exec safeline-tengine nginx -s reload 2>/dev/null || true
+    Show 0 "WAF Nginx配置已重�?"
+
+    Show 2 "Step 6: 配置WAF开机自�?.."
+    local safeline_service="/etc/systemd/system/safeline-waf.service"
+    if [ ! -f "$safeline_service" ]; then
+        cat > "$safeline_service" << SVCEOF
+[Unit]
+Description=SafeLine WAF Service
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/data/safeline
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+        if command -v docker-compose &>/dev/null && ! docker compose version &>/dev/null 2>&1; then
+            sed -i 's|/usr/bin/docker compose up -d|/usr/local/bin/docker-compose up -d|' "$safeline_service"
+            sed -i 's|/usr/bin/docker compose down|/usr/local/bin/docker-compose down|' "$safeline_service"
+        fi
+
+        systemctl daemon-reload
+        Show 0 "WAF systemd服务文件已创�?"
+    else
+        Show 2 "WAF systemd服务文件已存�?"
+    fi
+
+    systemctl enable safeline-waf.service 2>/dev/null
+    if [ $? -eq 0 ]; then
+        Show 0 "WAF服务已设置为开机自�?"
+    else
+        Show 3 "WAF服务开机自启设置失�?"
+    fi
+
+    Show 2 "Step 7: 执行管理员密码重�?.."
+    local reset_result
+    reset_result=$(docker exec safeline-mgt resetadmin 2>&1)
+    if [ $? -eq 0 ]; then
+        Show 0 "管理员密码重置成�?"
+        printf "%b$reset_result%b\n" "${GREEN}" "${NC}"
+    else
+        Show 3 "密码重置失败，请稍后手动执行: docker exec safeline-mgt resetadmin"
+    fi
+
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "  WAF 安装完成"
+    echo "  管理界面: https://0.0.0.0:${mgt_port}"
+    echo "  数据目录: /data/safeline"
+    echo "  配置文件: /data/safeline/.env"
+    echo "  重置密码: docker exec safeline-mgt resetadmin"
+    echo "  查看状�? cd /data/safeline && $compose_cmd ps"
+    echo "  查看日志: cd /data/safeline && $compose_cmd logs"
+    printf "%b\n" "${GREEN_LINE}"
+
+    cd - >/dev/null || true
+    log "INFO" "WAF安装完成"
+}
+
+_waf_start() {
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "          启动WAF (雷池/SafeLine)"
+    printf "%b\n" "${GREEN_LINE}"
+    echo ""
+
+    if [ ! -d "/data/safeline" ]; then
+        Show 3 "WAF数据目录 /data/safeline 不存在，请先安装WAF"
+        return 1
+    fi
+
+    cd /data/safeline/ || { Show 1 "无法进入目录 /data/safeline/"; return 1; }
+
+    local compose_cmd
+    compose_cmd=$(_get_compose_cmd)
+    if [ -z "$compose_cmd" ]; then
+        Show 1 "docker-compose未安�?"
+        cd - >/dev/null || true
+        return 1
+    fi
+
+    Show 2 "正在启动WAF容器..."
+    $compose_cmd up -d
+    if [ $? -ne 0 ]; then
+        Show 1 "WAF容器启动失败，请检查配置和镜像"
+        cd - >/dev/null || true
+        return 1
+    fi
+
+    Show 2 "等待容器启动(10�?..."
+    sleep 10
+
+    $compose_cmd ps
+
+    local mgt_port
+    mgt_port=$(grep "^MGT_PORT=" /data/safeline/.env 2>/dev/null | cut -d'=' -f2 || echo "9443")
+
+    open_firewall_port "${mgt_port}" "tcp"
+    open_firewall_port "80" "tcp"
+    Show 0 "防火墙已放行端口 ${mgt_port}/tcp 和 80/tcp"
+
+    docker exec safeline-tengine nginx -s reload 2>/dev/null || true
+    Show 0 "WAF Nginx配置已重�?"
+
+    Show 0 "WAF服务已启�?"
+    echo "  管理界面: https://0.0.0.0:${mgt_port}"
+    echo "  查看状�? cd /data/safeline && $compose_cmd ps"
+
+    cd - >/dev/null || true
+    log "INFO" "WAF服务已启�?"
+}
+
+_waf_stop() {
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "          停止WAF (雷池/SafeLine)"
+    printf "%b\n" "${GREEN_LINE}"
+    echo ""
+
+    if [ ! -d "/data/safeline" ]; then
+        Show 3 "WAF数据目录 /data/safeline 不存�?"
+        return 1
+    fi
+
+    cd /data/safeline/ || { Show 1 "无法进入目录 /data/safeline/"; return 1; }
+
+    local compose_cmd
+    compose_cmd=$(_get_compose_cmd)
+    if [ -z "$compose_cmd" ]; then
+        Show 1 "docker-compose未安�?"
+        cd - >/dev/null || true
+        return 1
+    fi
+
+    Show 2 "正在停止WAF容器..."
+    $compose_cmd down
+    if [ $? -eq 0 ]; then
+        Show 0 "WAF容器已停止并移除"
+    else
+        Show 1 "WAF容器停止失败，请手动检�?"
+    fi
+
+    cd - >/dev/null || true
+    log "INFO" "WAF服务已停�?"
+}
+
+_waf_reset_admin() {
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "          重置WAF管理员密�?"
+    printf "%b\n" "${GREEN_LINE}"
+    echo ""
+
+    if ! docker ps --filter "name=safeline-mgt" --format "{{.Names}}" 2>/dev/null | grep -q "safeline-mgt"; then
+        Show 1 "safeline-mgt 容器未运行，请先启动WAF服务"
+        return 1
+    fi
+
+    Show 2 "正在重置WAF管理员密�?.."
+    local reset_result
+    reset_result=$(docker exec safeline-mgt resetadmin 2>&1)
+    local reset_rc=$?
+
+    if [ $reset_rc -eq 0 ]; then
+        Show 0 "管理员密码重置成�?"
+        echo ""
+        printf "%b${reset_result}%b\n" "${GREEN}" "${NC}"
+        log "INFO" "WAF管理员密码已重置"
+    else
+        Show 1 "管理员密码重置失�?"
+        printf "%b${reset_result}%b\n" "${RED}" "${NC}"
+        log "ERROR" "WAF管理员密码重置失�? $reset_result"
+        return 1
+    fi
+}
+
+_waf_show_password() {
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "          查看WAF管理员密�?"
+    printf "%b\n" "${GREEN_LINE}"
+    echo ""
+
+    local safeline_dir="/data/safeline"
+
+    if [ ! -d "$safeline_dir" ]; then
+        Show 3 "WAF数据目录不存在，请先安装WAF"
+        return 1
+    fi
+
+    if ! docker ps --filter "name=safeline-mgt" --format "{{.Names}}" 2>/dev/null | grep -q "safeline-mgt"; then
+        Show 3 "safeline-mgt 容器未运行，正在尝试从配置文件读�?.."
+    else
+        Show 2 "容器运行中，尝试获取管理员信�?.."
+        local admin_info
+        admin_info=$(docker exec safeline-mgt resetadmin 2>&1)
+        if [ $? -eq 0 ]; then
+            printf "%b${admin_info}%b\n" "${GREEN}" "${NC}"
+            Show 2 "注意: 执行查看操作会触发密码重置，请妥善保管新密码"
+            return 0
+        else
+            Show 3 "无法通过容器获取密码，尝试从配置文件读取..."
+        fi
+    fi
+
+    if [ -f "$safeline_dir/.env" ]; then
+        Show 2 "�?.env 文件读取配置信息:"
+        echo ""
+        printf "%b--- WAF 配置信息 ---%b\n" "${GREEN}" "${NC}"
+        if grep -q "^POSTGRES_PASSWORD=" "$safeline_dir/.env" 2>/dev/null; then
+            printf "PostgreSQL密码: %s\n" "$(grep '^POSTGRES_PASSWORD=' "$safeline_dir/.env" | cut -d'=' -f2-)"
+        fi
+        if grep -q "^MGT_PORT=" "$safeline_dir/.env" 2>/dev/null; then
+            printf "管理端口:       %s\n" "$(grep '^MGT_PORT=' "$safeline_dir/.env" | cut -d'=' -f2-)"
+        fi
+        if grep -q "^IMAGE_TAG=" "$safeline_dir/.env" 2>/dev/null; then
+            printf "镜像版本:       %s\n" "$(grep '^IMAGE_TAG=' "$safeline_dir/.env" | cut -d'=' -f2-)"
+        fi
+    else
+        Show 3 "未找�?.env 配置文件"
+    fi
+
+    if docker ps --filter "name=safeline-mgt" --format "{{.Names}}" 2>/dev/null | grep -q "safeline-mgt"; then
+        echo ""
+        Show 2 "提示: 执行 'docker exec safeline-mgt resetadmin' 可重置管理员密码"
+    fi
+
+    log "INFO" "查看WAF管理员密�?"
+}
+
+manage_safeline_waf() {
+    while true; do
+        echo ""
+        printf "%b\n" "${GREEN_LINE}"
+        echo "          WAF管理 (雷池/SafeLine)"
+        printf "%b\n" "${GREEN_LINE}"
+        echo ""
+        echo "1. 安装WAF"
+        echo "2. 启动WAF"
+        echo "3. 停止WAF"
+        echo "4. 重置管理员密�?"
+        echo "5. 查看管理员密�?"
+        echo "6. 返回主菜�?"
+        echo ""
+        read -r -p "$(printf "%b请选择(1-6): %b\n" "${GREEN}" "${NC}")" waf_choice
+
+        case $waf_choice in
+            1)
+                _waf_install
+                ;;
+            2)
+                _waf_start
+                ;;
+            3)
+                _waf_stop
+                ;;
+            4)
+                _waf_reset_admin
+                ;;
+            5)
+                _waf_show_password
+                ;;
+            6)
+                break
+                ;;
+            *)
+                Show 3 "无效的选择"
+                ;;
+        esac
+    done
+}
+
+diagnostics() {
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "          System Diagnostics"
+    printf "%b\n" "${GREEN_LINE}"
+    echo ""
+
+    printf "%b[1] Operating System%b\n" "${GREEN}" "${NC}"
+    echo "  Distribution: $DISTRO_ID ($DISTRO_FAMILY)"
+    if [ -f /etc/os-release ]; then
+        local os_name
+        os_name=$(grep '^PRETTY_NAME=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
+        echo "  OS Name:      $os_name"
+    fi
+    local kernel_ver
+    kernel_ver=$(uname -r 2>/dev/null || echo "unknown")
+    local arch
+    arch=$(uname -m 2>/dev/null || echo "unknown")
+    local uptime_str
+    uptime_str=$(uptime 2>/dev/null | sed 's/^ *//' || echo "unknown")
+    echo "  Kernel:       $kernel_ver"
+    echo "  Architecture: $arch"
+    echo "  Uptime:       $uptime_str"
+
+    echo ""
+    printf "%b[2] Package Manager%b\n" "${GREEN}" "${NC}"
+    echo "  Manager:      $PKG_MANAGER"
+    if command -v "$PKG_MANAGER" &>/dev/null; then
+        Show 0 "Package manager $PKG_MANAGER available"
+    else
+        Show 1 "Package manager $PKG_MANAGER NOT found"
+    fi
+
+    echo ""
+    printf "%b[3] System Resources%b\n" "${GREEN}" "${NC}"
+    if command -v free &>/dev/null; then
+        local mem_total mem_used
+        mem_total=$(free -h 2>/dev/null | awk '/^Mem:/{print $2}' || echo "N/A")
+        mem_used=$(free -h 2>/dev/null | awk '/^Mem:/{print $3}' || echo "N/A")
+        echo "  Memory:       ${mem_used} / ${mem_total}"
+    fi
+    if command -v df &>/dev/null; then
+        local disk_info
+        disk_info=$(df -h / 2>/dev/null | awk 'NR==2{print $3"/"$2" ("$5")"}' || echo "N/A")
+        echo "  Disk (/):     $disk_info"
+    fi
+    if command -v nproc &>/dev/null; then
+        local cpu_count
+        cpu_count=$(nproc 2>/dev/null || echo "N/A")
+        echo "  CPU Cores:    $cpu_count"
+    fi
+    local load_avg
+    load_avg=$(cat /proc/loadavg 2>/dev/null | awk '{print $1, $2, $3}' || echo "N/A")
+    echo "  Load Average: $load_avg"
+
+    echo ""
+    printf "%b[4] Network Connectivity%b\n" "${GREEN}" "${NC}"
+    local server_ip
+    server_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    [ -z "$server_ip" ] && server_ip=$(ip route get 1 2>/dev/null | awk '{print $7; exit}')
+    echo "  Primary IP:   ${server_ip:-N/A}"
+    if command -v ping &>/dev/null; then
+        if ping -c 1 -W 2 8.8.8.8 &>/dev/null; then
+            Show 0 "Internet connectivity: OK (8.8.8.8 reachable)"
+        else
+            Show 3 "Internet connectivity: FAILED"
+        fi
+    fi
+
+    echo ""
+    printf "%b[5] Required Commands%b\n" "${GREEN}" "${NC}"
+    for cmd in bash awk sed grep cut tr wget curl tar gzip systemctl; do
+        if command -v "$cmd" &>/dev/null; then
+            printf "  %-15s [ OK ]\n" "$cmd"
+        else
+            printf "  %-15s [ MISSING ]\n" "$cmd"
+        fi
+    done
+    for cmd in docker; do
+        if command -v "$cmd" &>/dev/null; then
+            printf "  %-15s [ OK ] (version: %s)\n" "$cmd" "$(docker --version 2>/dev/null | cut -d' ' -f3 | tr -d ',')"
+        else
+            printf "  %-15s [ MISSING ]\n" "$cmd"
+        fi
+    done
+
+    echo ""
+    printf "%b[6] Service Status%b\n" "${GREEN}" "${NC}"
+    for svc in ssh sshd fail2ban firewalld ufw docker; do
+        if systemctl is-active "$svc" &>/dev/null 2>&1; then
+            printf "  %-15s [ ACTIVE ]\n" "$svc"
+        elif systemctl is-enabled "$svc" &>/dev/null 2>&1; then
+            printf "  %-15s [ INACTIVE ]\n" "$svc"
+        fi
+    done
+
+    echo ""
+    printf "%b[7] SSH Configuration%b\n" "${GREEN}" "${NC}"
+    local sshd_cfg="/etc/ssh/sshd_config"
+    if [ -f "$sshd_cfg" ]; then
+        for key in Port PermitRootLogin PasswordAuthentication PubkeyAuthentication MaxAuthTries; do
+            local val
+            val=$(grep "^$key " "$sshd_cfg" 2>/dev/null | awk '{print $2}' || echo "not set")
+            printf "  %-25s %s\n" "$key:" "$val"
+        done
+    else
+        echo "  sshd_config not found"
+    fi
+
+    echo ""
+    printf "%b[8] Firewall Status%b\n" "${GREEN}" "${NC}"
+    if command -v firewall-cmd &>/dev/null; then
+        echo "  FirewallD running: $(firewall-cmd --state 2>/dev/null || echo 'inactive')"
+        echo "  Default zone: $(firewall-cmd --get-default-zone 2>/dev/null || echo 'N/A')"
+        echo "  Open ports: $(firewall-cmd --list-ports 2>/dev/null || echo 'N/A')"
+    elif command -v ufw &>/dev/null; then
+        echo "  UFW status: $(ufw status 2>/dev/null | head -1 || echo 'N/A')"
+    elif command -v iptables &>/dev/null; then
+        echo "  iptables rules count: $(iptables -L -n 2>/dev/null | grep -c '^ACCEPT\|^DROP\|^REJECT' || echo 0)"
+    else
+        echo "  No firewall detected"
+    fi
+
+    echo ""
+    printf "%b[9] Docker Status%b\n" "${GREEN}" "${NC}"
+    if command -v docker &>/dev/null; then
+        echo "  Docker version: $(docker --version 2>/dev/null | head -1 || echo 'N/A')"
+        echo "  Running containers: $(docker ps -q 2>/dev/null | wc -l || echo 0)"
+        echo "  Total containers: $(docker ps -a -q 2>/dev/null | wc -l || echo 0)"
+    else
+        echo "  Docker not installed"
+    fi
+
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "  Diagnostics complete. Log file: $LOG_FILE"
+    printf "%b\n" "${GREEN_LINE}"
+    log "INFO" "System diagnostics completed"
+}
+
+install_docker() {
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "          Docker CE 安装（版本渐进式）"
+    printf "%b\n" "${GREEN_LINE}"
+    echo ""
+
+    if [ "$EUID" -ne 0 ]; then
+        Show 1 "请使用root用户或sudo运行"
+        return 1
+    fi
+
+    Show 2 "检查系统兼容性..."
+    case "$DISTRO_ID" in
+        centos|rhel|rocky|almalinux|fedora|oraclelinux)
+            Show 0 "系统兼容: $DISTRO_ID (RHEL家族)"
+            ;;
+        ubuntu|debian)
+            Show 0 "系统兼容: $DISTRO_ID (Debian家族)"
+            ;;
+        *)
+            Show 3 "未经测试的系统: $DISTRO_ID，将尝试RHEL方式安装"
+            ;;
+    esac
+
+    Show 2 "安装Docker依赖包..."
+    case "$PKG_MANAGER" in
+        dnf|yum)
+            $PKG_MANAGER install -y yum-utils device-mapper-persistent-data lvm2 curl 2>/dev/null || true
+            ;;
+        apt-get)
+            apt-get update -qq 2>/dev/null || true
+            apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release 2>/dev/null || true
+            ;;
+    esac
+    Show 0 "依赖包安装完成"
+
+    local os_version
+    os_version=$(rpm -E %{rhel} 2>/dev/null || echo "9")
+    local basearch
+    basearch=$(uname -m)
+
+    local docker_mirrors=(
+        "https://mirrors.aliyun.com/docker-ce/linux/centos/${os_version}/${basearch}/stable"
+        "https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/centos/${os_version}/${basearch}/stable"
+        "http://mirrors.aliyun.com/docker-ce/linux/centos/${os_version}/${basearch}/stable"
+        "https://download.docker.com/linux/centos/${os_version}/${basearch}/stable"
+    )
+    local mirror_names=("aliyun-https" "tsinghua-https" "aliyun-http" "official")
+    local repo_file="/etc/yum.repos.d/docker-ce.repo"
+    local repo_ok=false
+
+    for i in "${!docker_mirrors[@]}"; do
+        local baseurl="${docker_mirrors[$i]}"
+        local name="${mirror_names[$i]}"
+        Show 2 "尝试Docker仓库 [${name}]..."
+
+        rm -f /etc/yum.repos.d/docker-ce*.repo 2>/dev/null
+
+        cat > "$repo_file" << DOCKERINST
+[docker-ce-stable]
+name=Docker CE Stable - ${name}
+baseurl=${baseurl}
+enabled=1
+gpgcheck=0
+sslverify=0
+ip_resolve=4
+timeout=60
+retries=5
+skip_if_unavailable=1
+DOCKERINST
+
+        $PKG_MANAGER clean expire-cache --disablerepo="*" --enablerepo="docker-ce-stable" 2>/dev/null || true
+        if $PKG_MANAGER makecache --disablerepo="*" --enablerepo="docker-ce-stable" 2>/dev/null; then
+            Show 0 "Docker仓库配置成功 [${name}]"
+            repo_ok=true
+            break
+        fi
+        rm -f "$repo_file" 2>/dev/null
+    done
+
+    if [ "$repo_ok" = "false" ]; then
+        Show 1 "所有Docker仓库配置均失败"
+        Show 2 "请检查网络连接: ping -4 -c 2 mirrors.aliyun.com"
+        return 1
+    fi
+
+    Show 2 "获取可用Docker版本列表..."
+    local available_versions
+    available_versions=$($PKG_MANAGER list available docker-ce --showduplicates 2>/dev/null | grep docker-ce | awk '{print $2}' | sort -V | uniq)
+    if [ -z "$available_versions" ]; then
+        Show 1 "无法获取Docker版本列表"
+        return 1
+    fi
+
+    local version_count
+    version_count=$(echo "$available_versions" | wc -l)
+    Show 0 "发现 ${version_count} 个可用Docker版本"
+
+    echo ""
+    echo "  可用Docker CE版本（从旧到新）:"
+    echo "──────────────────────────────────────"
+    local ver_idx=1
+    local -a ver_array
+    while IFS= read -r ver; do
+        [ -z "$ver" ] && continue
+        ver_array+=("$ver")
+        printf "  %2d. %s\n" "$ver_idx" "$ver"
+        ((ver_idx++))
+    done <<< "$available_versions"
+    echo "──────────────────────────────────────"
+    echo "   0. 安装最新版本"
+    echo ""
+
+    local ver_choice
+    read -r -p "$(printf "%b请选择版本(0-${#ver_array[@]}, 默认0=最新): %b" "${GREEN}" "${NC}")" ver_choice
+    ver_choice=${ver_choice:-0}
+
+    local selected_version=""
+    if [ "$ver_choice" = "0" ] || [ -z "$ver_choice" ]; then
+        selected_version="docker-ce"
+        Show 2 "将安装最新版本的Docker CE"
+    elif [ "$ver_choice" -ge 1 ] 2>/dev/null && [ "$ver_choice" -le "${#ver_array[@]}" ]; then
+        selected_version="docker-ce-${ver_array[$((ver_choice - 1))]}"
+        Show 2 "将安装Docker CE 版本: ${ver_array[$((ver_choice - 1))]}"
+    else
+        Show 1 "无效选择"
+        return 1
+    fi
+
+    Show 2 "安装Docker CE: $selected_version (从低版本基础开始)..."
+    $PKG_MANAGER install -y docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin 2>/dev/null || true
+
+    if ! $PKG_MANAGER install -y "$selected_version" 2>&1 | tee /tmp/docker_install.log; then
+        Show 1 "Docker安装失败: $selected_version"
+        Show 2 "尝试安装基础可用的旧版本作为回退..."
+
+        local fallback_versions=("docker-ce-20.10.*" "docker-ce-23.0.*" "docker-ce-24.0.*" "docker-ce")
+        local rollback_ok=false
+        for fallback in "${fallback_versions[@]}"; do
+            Show 2 "回退尝试: $fallback"
+            if $PKG_MANAGER install -y "$fallback" 2>/dev/null; then
+                Show 0 "回退安装成功: $fallback"
+                rollback_ok=true
+                break
+            fi
+        done
+
+        if [ "$rollback_ok" = "false" ]; then
+            Show 1 "所有回退尝试均失败，Docker安装未完成"
+            cat /tmp/docker_install.log 2>/dev/null | tail -20
+            return 1
+        fi
+    fi
+
+    Show 2 "验证Docker安装..."
+    local installed_version
+    installed_version=$(docker --version 2>/dev/null | head -1)
+    if [ -z "$installed_version" ]; then
+        Show 1 "Docker命令不可用，安装可能未成功"
+        return 1
+    fi
+    Show 0 "Docker已安装: $installed_version"
+
+    local compose_version
+    compose_version=$(docker compose version 2>/dev/null | head -1 || docker-compose --version 2>/dev/null | head -1 || echo "N/A")
+    Show 0 "Docker Compose: $compose_version"
+
+    Show 2 "启用并启动Docker服务..."
+    if command -v systemctl &>/dev/null; then
+        systemctl enable docker 2>/dev/null || true
+        systemctl start docker 2>/dev/null
+        if systemctl is-active --quiet docker 2>/dev/null; then
+            Show 0 "Docker服务已启动 (systemctl)"
+        else
+            Show 1 "Docker服务启动失败"
+            journalctl -xeu docker --no-pager -n 10 2>/dev/null || true
+            return 1
+        fi
+    elif command -v service &>/dev/null; then
+        service docker start 2>/dev/null && Show 0 "Docker服务已启动 (service)" || Show 1 "Docker服务启动失败"
+    fi
+
+    Show 2 "验证Docker运行状态..."
+    if docker info &>/dev/null; then
+        Show 0 "Docker守护进程运行正常"
+    else
+        Show 1 "Docker守护进程异常"
+        return 1
+    fi
+
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        usermod -aG docker "$SUDO_USER" 2>/dev/null && \
+            Show 0 "用户 $SUDO_USER 已添加到docker组" || \
+            Show 3 "无法添加用户到docker组"
+    fi
+
+    local docker_root_dir
+    docker_root_dir=$(docker info 2>/dev/null | grep "Docker Root Dir" | awk '{print $NF}' || echo "/var/lib/docker")
+    local storage_driver
+    storage_driver=$(docker info 2>/dev/null | grep "Storage Driver" | awk '{print $NF}' || echo "overlay2")
+
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "  Docker CE 安装完成"
+    echo "  版本:       $installed_version"
+    echo "  Compose:    $compose_version"
+    echo "  存储驱动:   $storage_driver"
+    echo "  数据目录:   $docker_root_dir"
+    echo "  仓库镜像:   ${mirror_names[$i-1]:-official}"
+    echo ""
+    echo "  测试:       docker run hello-world"
+    echo "  状态:       systemctl status docker"
+    echo "  日志:       journalctl -u docker -f"
+    printf "%b\n" "${GREEN_LINE}"
+
+    rm -f /tmp/docker_install.log 2>/dev/null
+    log "INFO" "Docker CE 安装完成: $installed_version"
+}
+
+_select_version() {
+    local component="$1"
+    shift
+    local -a versions=("$@")
+
+    echo ""
+    echo "  ${component} 可用版本（从旧到新）:"
+    echo "  ──────────────────────────────────"
+    local idx=1
+    for ver in "${versions[@]}"; do
+        printf "  %2d. %s\n" "$idx" "$ver"
+        ((idx++))
+    done
+    echo "   0. 最新可用版本"
+    echo "  ──────────────────────────────────"
+
+    local choice
+    read -r -p "$(printf "%b请选择${component}版本(0-${#versions[@]}, 默认0): %b" "${GREEN}" "${NC}")" choice
+    choice=${choice:-0}
+
+    if [ "$choice" = "0" ]; then
+        echo "${versions[-1]}"
+    elif [ "$choice" -ge 1 ] 2>/dev/null && [ "$choice" -le "${#versions[@]}" ]; then
+        echo "${versions[$((choice - 1))]}"
+    else
+        echo "${versions[-1]}"
+    fi
+}
+
+install_lamp_lnmp() {
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "          安装 LAMP / LNMP 环境"
+    printf "%b\n" "${GREEN_LINE}"
+    echo ""
+
+    if [ "$EUID" -ne 0 ]; then
+        Show 1 "请使用root用户或sudo运行"
+        return 1
+    fi
+
+    echo "  LAMP = Linux + Apache + MySQL + PHP"
+    echo "  LNMP = Linux + Nginx  + MySQL + PHP"
+    echo ""
+    echo "  1. 安装 LAMP 环境 (Apache)"
+    echo "  2. 安装 LNMP 环境 (Nginx)"
+    echo "  3. 仅安装 MySQL"
+    echo "  4. 仅安装 PHP"
+    echo "  0. 返回"
+    echo ""
+
+    local stack_choice
+    read -r -p "$(printf "%b请选择(0-4): %b" "${GREEN}" "${NC}")" stack_choice
+    stack_choice=${stack_choice:-0}
+
+    case "$stack_choice" in
+        0) return 0 ;;
+        1) local web_server="apache" ;;
+        2) local web_server="nginx" ;;
+        3) local web_server="none" ;;
+        4) local web_server="php_only" ;;
+        *) Show 1 "无效选择"; return 1 ;;
+    esac
+
+    local mysql_versions=("5.7" "8.0" "8.2" "8.3" "8.4" "9.0" "9.1" "9.2")
+    local php_versions=("7.4" "8.0" "8.1" "8.2" "8.3" "8.4")
+    local nginx_versions=("1.20" "1.22" "1.24" "1.26" "1.27")
+    local apache_versions=("2.4.37" "2.4.51" "2.4.57" "2.4.62" "2.4.63")
+
+    local selected_mysql=""
+    local selected_php=""
+    local selected_nginx=""
+    local selected_apache=""
+
+    if [ "$web_server" = "none" ]; then
+        selected_mysql=$(_select_version "MySQL" "${mysql_versions[@]}")
+        Show 2 "将安装 MySQL ${selected_mysql}"
+    elif [ "$web_server" = "php_only" ]; then
+        selected_php=$(_select_version "PHP" "${php_versions[@]}")
+        Show 2 "将安装 PHP ${selected_php}"
+    else
+        selected_mysql=$(_select_version "MySQL" "${mysql_versions[@]}")
+        selected_php=$(_select_version "PHP" "${php_versions[@]}")
+
+        if [ "$web_server" = "apache" ]; then
+            selected_apache=$(_select_version "Apache" "${apache_versions[@]}")
+        else
+            selected_nginx=$(_select_version "Nginx" "${nginx_versions[@]}")
+        fi
+    fi
+
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "  安装计划:"
+    if [ "$web_server" = "apache" ]; then
+        echo "  架构:     LAMP"
+        echo "  Apache:   ${selected_apache}"
+    elif [ "$web_server" = "nginx" ]; then
+        echo "  架构:     LNMP"
+        echo "  Nginx:    ${selected_nginx}"
+    fi
+    [ -n "$selected_mysql" ] && echo "  MySQL:    ${selected_mysql}"
+    [ -n "$selected_php" ] && echo "  PHP:      ${selected_php}"
+    printf "%b\n" "${GREEN_LINE}"
+    echo ""
+
+    local confirm
+    read -r -p "$(printf "%b确认安装? (y/n, 默认y): %b" "${GREEN}" "${NC}")" confirm
+    [[ "${confirm:-y}" =~ ^[Yy] ]] || { Show 2 "安装已取消"; return 0; }
+
+    Show 2 "安装编译工具和依赖..."
+    case "$PKG_MANAGER" in
+        dnf|yum)
+            $PKG_MANAGER install -y gcc gcc-c++ make cmake autoconf automake libtool \
+                pcre pcre-devel openssl openssl-devel zlib zlib-devel \
+                libxml2 libxml2-devel bzip2 bzip2-devel libcurl libcurl-devel \
+                libjpeg libjpeg-devel libpng libpng-devel freetype freetype-devel \
+                gmp gmp-devel readline readline-devel libxslt libxslt-devel \
+                ncurses ncurses-devel perl perl-devel bison wget curl \
+                libicu libicu-devel oniguruma oniguruma-devel sqlite-devel \
+                libzip libzip-devel 2>/dev/null || true
+            ;;
+        apt-get)
+            apt-get update -qq 2>/dev/null || true
+            apt-get install -y build-essential cmake autoconf automake libtool \
+                libpcre3 libpcre3-dev zlib1g zlib1g-dev libssl-dev \
+                libxml2 libxml2-dev libbz2-dev libcurl4-openssl-dev \
+                libjpeg-dev libpng-dev libfreetype6-dev libgmp-dev \
+                libreadline-dev libxslt1-dev libncurses5-dev libperl-dev bison \
+                wget curl libicu-dev libonig-dev libsqlite3-dev libzip-dev 2>/dev/null || true
+            ;;
+    esac
+    Show 0 "基础依赖安装完成"
+
+    if [ -n "$selected_mysql" ] && [ "$web_server" != "php_only" ]; then
+        Show 2 "安装 MySQL ${selected_mysql}..."
+        case "$PKG_MANAGER" in
+            dnf|yum)
+                $PKG_MANAGER install -y mysql-server 2>/dev/null || \
+                    $PKG_MANAGER install -y mariadb-server 2>/dev/null || true
+                ;;
+            apt-get)
+                $PKG_MANAGER install -y mysql-server 2>/dev/null || \
+                    $PKG_MANAGER install -y mariadb-server 2>/dev/null || true
+                ;;
+        esac
+
+        if command -v systemctl &>/dev/null; then
+            systemctl enable mysqld 2>/dev/null || systemctl enable mariadb 2>/dev/null || true
+            systemctl start mysqld 2>/dev/null || systemctl start mariadb 2>/dev/null || true
+        fi
+
+        if command -v mysql &>/dev/null; then
+            Show 0 "MySQL已安装: $(mysql --version 2>/dev/null | head -1)"
+        else
+            Show 3 "MySQL安装可能未成功，请手动检查"
+        fi
+    fi
+
+    if [ "$web_server" = "apache" ]; then
+        Show 2 "安装 Apache ${selected_apache}..."
+        case "$PKG_MANAGER" in
+            dnf|yum)
+                $PKG_MANAGER install -y httpd httpd-devel mod_ssl 2>/dev/null || true
+                ;;
+            apt-get)
+                $PKG_MANAGER install -y apache2 apache2-dev 2>/dev/null || true
+                ;;
+        esac
+
+        if command -v systemctl &>/dev/null; then
+            systemctl enable httpd 2>/dev/null || systemctl enable apache2 2>/dev/null || true
+            systemctl start httpd 2>/dev/null || systemctl start apache2 2>/dev/null || true
+        fi
+
+        if command -v httpd &>/dev/null; then
+            Show 0 "Apache已安装: $(httpd -v 2>/dev/null | head -1)"
+        elif command -v apache2ctl &>/dev/null; then
+            Show 0 "Apache已安装: $(apache2ctl -v 2>/dev/null | head -1)"
+        else
+            Show 3 "Apache安装可能未成功"
+        fi
+
+    elif [ "$web_server" = "nginx" ]; then
+        Show 2 "安装 Nginx ${selected_nginx}..."
+        case "$PKG_MANAGER" in
+            dnf|yum)
+                $PKG_MANAGER install -y nginx 2>/dev/null || true
+                ;;
+            apt-get)
+                $PKG_MANAGER install -y nginx 2>/dev/null || true
+                ;;
+        esac
+
+        if command -v systemctl &>/dev/null; then
+            systemctl enable nginx 2>/dev/null || true
+            systemctl start nginx 2>/dev/null || true
+        fi
+
+        if command -v nginx &>/dev/null; then
+            Show 0 "Nginx已安装: $(nginx -v 2>&1 | head -1)"
+        else
+            Show 3 "Nginx安装可能未成功"
+        fi
+    fi
+
+    if [ -n "$selected_php" ]; then
+        Show 2 "安装 PHP ${selected_php} 及扩展..."
+        case "$PKG_MANAGER" in
+            dnf|yum)
+                $PKG_MANAGER install -y php php-cli php-fpm php-mysqlnd php-pdo \
+                    php-gd php-mbstring php-xml php-curl php-zip php-intl \
+                    php-bcmath php-json php-opcache php-soap php-xmlrpc 2>/dev/null || \
+                $PKG_MANAGER install -y php php-cli php-fpm php-mysqlnd php-gd \
+                    php-mbstring php-xml php-curl php-zip php-intl php-bcmath php-opcache 2>/dev/null || true
+
+                if [ "$web_server" = "nginx" ]; then
+                    $PKG_MANAGER install -y php-fpm 2>/dev/null || true
+                    systemctl enable php-fpm 2>/dev/null || true
+                    systemctl start php-fpm 2>/dev/null || true
+                fi
+                ;;
+            apt-get)
+                local php_ver_pkg="${selected_php}"
+                $PKG_MANAGER install -y php${php_ver_pkg} php${php_ver_pkg}-cli php${php_ver_pkg}-fpm \
+                    php${php_ver_pkg}-mysql php${php_ver_pkg}-gd php${php_ver_pkg}-mbstring \
+                    php${php_ver_pkg}-xml php${php_ver_pkg}-curl php${php_ver_pkg}-zip \
+                    php${php_ver_pkg}-intl php${php_ver_pkg}-bcmath php${php_ver_pkg}-opcache 2>/dev/null || \
+                $PKG_MANAGER install -y php php-cli php-fpm php-mysql php-gd \
+                    php-mbstring php-xml php-curl php-zip php-intl php-bcmath php-opcache 2>/dev/null || true
+
+                if [ "$web_server" = "nginx" ]; then
+                    systemctl enable php${php_ver_pkg}-fpm 2>/dev/null || true
+                    systemctl start php${php_ver_pkg}-fpm 2>/dev/null || true
+                fi
+                ;;
+        esac
+
+        if command -v php &>/dev/null; then
+            Show 0 "PHP已安装: $(php -v 2>/dev/null | head -1)"
+        else
+            Show 3 "PHP安装可能未成功"
+        fi
+    fi
+
+    Show 2 "验证服务状态..."
+    local all_ok=true
+
+    if command -v systemctl &>/dev/null; then
+        if [ "$web_server" = "apache" ]; then
+            systemctl is-active --quiet httpd 2>/dev/null || systemctl is-active --quiet apache2 2>/dev/null || { Show 1 "Apache服务未运行"; all_ok=false; }
+        elif [ "$web_server" = "nginx" ]; then
+            systemctl is-active --quiet nginx 2>/dev/null || { Show 1 "Nginx服务未运行"; all_ok=false; }
+        fi
+
+        if [ -n "$selected_mysql" ] && [ "$web_server" != "php_only" ]; then
+            systemctl is-active --quiet mysqld 2>/dev/null || systemctl is-active --quiet mariadb 2>/dev/null || { Show 1 "MySQL服务未运行"; all_ok=false; }
+        fi
+
+        if [ -n "$selected_php" ] && [ "$web_server" = "nginx" ]; then
+            systemctl is-active --quiet php-fpm 2>/dev/null || { Show 3 "PHP-FPM服务未运行"; }
+        fi
+    fi
+
+    if [ "$all_ok" = "true" ]; then
+        Show 0 "所有服务运行正常"
+    else
+        Show 3 "部分服务未正常启动，请手动检查"
+    fi
+
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "  LAMP/LNMP 环境安装完成"
+    echo "  ──────────────────────────────────"
+    if [ "$web_server" = "apache" ]; then
+        echo "  架构:    LAMP"
+        echo "  Web:     $(httpd -v 2>/dev/null | head -1 || apache2ctl -v 2>/dev/null | head -1 || echo 'N/A')"
+    elif [ "$web_server" = "nginx" ]; then
+        echo "  架构:    LNMP"
+        echo "  Web:     $(nginx -v 2>&1 | head -1 || echo 'N/A')"
+    fi
+    [ -n "$selected_mysql" ] && echo "  数据库:  $(mysql --version 2>/dev/null | head -1 || echo 'N/A')"
+    [ -n "$selected_php" ] && echo "  PHP:     $(php -v 2>/dev/null | head -1 || echo 'N/A')"
+    echo ""
+    echo "  测试页:  echo '<?php phpinfo(); ?>' > /var/www/html/info.php"
+    echo "  访问:    http://<服务器IP>/info.php"
+    echo "  安全:    确认后请删除 info.php"
+    printf "%b\n" "${GREEN_LINE}"
+
+    log "INFO" "LAMP/LNMP环境安装完成 - Web:${web_server} MySQL:${selected_mysql:-N/A} PHP:${selected_php:-N/A}"
+}
+
+_install_mw_package() {
+    local name="$1"
+    local pkg_name="$2"
+    local min_ver="$3"
+    local latest_ver="$4"
+    local ver_choice=""
+
+    echo ""
+    echo "  ── ${name} ──────────────────────────"
+    echo "  最低支持版本: ${min_ver}"
+    echo "  最新稳定版本: ${latest_ver}"
+    echo "  1. 安装最低版本 (${min_ver})"
+    echo "  2. 安装最新版本 (${latest_ver})"
+    echo "  3. 跳过"
+    echo ""
+
+    read -r -p "$(printf "%b请选择(1-3, 默认2): %b" "${GREEN}" "${NC}")" ver_choice
+    ver_choice=${ver_choice:-2}
+
+    case "$ver_choice" in
+        1)
+            Show 2 "安装 ${name} ${min_ver}..."
+            ;;
+        2)
+            Show 2 "安装 ${name} ${latest_ver}..."
+            ;;
+        3)
+            Show 2 "跳过 ${name}"
+            return 0
+            ;;
+        *)
+            Show 2 "安装 ${name} ${latest_ver}..."
+            ;;
+    esac
+
+    if [ "$name" = "HFish" ]; then
+        install_hfish
+        return $?
+    fi
+
+    local install_result
+    install_result=$($PKG_MANAGER install -y "$pkg_name" 2>&1)
+    local install_rc=$?
+
+    if [ $install_rc -eq 0 ]; then
+        local installed_ver
+        installed_ver=$($PKG_MANAGER list installed "$pkg_name" 2>/dev/null | grep "$pkg_name" | awk '{print $2}' | head -1 || echo "unknown")
+        Show 0 "${name} 安装成功 (版本: ${installed_ver})"
+        log "INFO" "中间件安装成功: ${name} ${installed_ver}"
+    else
+        Show 1 "${name} 安装失败 (退出码: ${install_rc})"
+        log "ERROR" "中间件安装失败: ${name} - ${install_result}"
+        return 1
+    fi
+
+    return 0
+}
+
+install_middleware() {
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "          安装中间件（渐进式版本升级）"
+    printf "%b\n" "${GREEN_LINE}"
+    echo ""
+
+    if [ "$EUID" -ne 0 ]; then
+        Show 1 "请使用root用户或sudo运行"
+        return 1
+    fi
+
+    echo "  中间件版本策略: 从最低支持版本到最新稳定版本"
+    echo "  安装方式: 使用系统包管理器 (${PKG_MANAGER})"
+    echo ""
+    echo "  ────────────────────────────────────────────"
+    echo "  1. 安装全部中间件（推荐，从低到高渐进安装）"
+    echo "  2. 选择性安装中间件"
+    echo "  3. 仅安装缓存/消息队列 (Redis/RabbitMQ/Kafka)"
+    echo "  4. 仅安装Web服务器 (Nginx/Apache/Tomcat)"
+    echo "  5. 仅安装数据库客户端 (MySQL/PostgreSQL/MongoDB)"
+    echo "  0. 返回"
+    echo ""
+
+    local mw_choice
+    read -r -p "$(printf "%b请选择(0-5): %b" "${GREEN}" "${NC}")" mw_choice
+    mw_choice=${mw_choice:-0}
+
+    case "$mw_choice" in
+        0) return 0 ;;
+        1) local mode="all" ;;
+        2) local mode="select" ;;
+        3) local mode="cache" ;;
+        4) local mode="web" ;;
+        5) local mode="db" ;;
+        *) Show 1 "无效选择"; return 1 ;;
+    esac
+
+    Show 2 "更新软件包索引..."
+    case "$PKG_MANAGER" in
+        dnf|yum) $PKG_MANAGER makecache 2>/dev/null || true ;;
+        apt-get) apt-get update -qq 2>/dev/null || true ;;
+    esac
+
+    local -a mw_list=()
+
+    if [ "$mode" = "all" ]; then
+        mw_list=(
+            "Redis|redis|6.2|7.4"
+            "Memcached|memcached|1.6|1.6"
+            "RabbitMQ|rabbitmq-server|3.8|4.0"
+            "Apache|httpd|2.4.37|2.4.63"
+            "Nginx|nginx|1.20|1.27"
+            "Tomcat|tomcat|9.0|10.1"
+            "Node.js|nodejs|16|22"
+            "Python3|python3|3.8|3.13"
+            "Go|golang|1.19|1.24"
+            "OpenJDK|java-17-openjdk|17|21"
+            "PostgreSQL|postgresql-server|12|17"
+            "MongoDB|mongodb-org|6.0|8.0"
+            "Elasticsearch|elasticsearch|7.17|8.17"
+            "Logstash|logstash|7.17|8.17"
+            "Kibana|kibana|7.17|8.17"
+            "HFish|hfish-server|3.3|4.0"
+        )
+    elif [ "$mode" = "cache" ]; then
+        mw_list=(
+            "Redis|redis|6.2|7.4"
+            "Memcached|memcached|1.6|1.6"
+            "RabbitMQ|rabbitmq-server|3.8|4.0"
+        )
+    elif [ "$mode" = "web" ]; then
+        mw_list=(
+            "Apache|httpd|2.4.37|2.4.63"
+            "Nginx|nginx|1.20|1.27"
+            "Tomcat|tomcat|9.0|10.1"
+        )
+    elif [ "$mode" = "db" ]; then
+        mw_list=(
+            "PostgreSQL|postgresql-server|12|17"
+            "MongoDB|mongodb-org|6.0|8.0"
+        )
+    elif [ "$mode" = "select" ]; then
+        echo ""
+        echo "  可选中间件（输入编号，空格分隔，如: 1 3 5）:"
+        echo "  ────────────────────────────────────────────"
+        echo "   1. Redis (缓存)"
+        echo "   2. Memcached (缓存)"
+        echo "   3. RabbitMQ (消息队列)"
+        echo "   4. Apache (Web服务器)"
+        echo "   5. Nginx (Web服务器)"
+        echo "   6. Tomcat (应用服务器)"
+        echo "   7. Node.js (运行时)"
+        echo "   8. Python3 (运行时)"
+        echo "   9. Go (运行时)"
+        echo "  10. OpenJDK (运行时)"
+        echo "  11. PostgreSQL (数据库)"
+        echo "  12. MongoDB (数据库)"
+        echo "  13. Elasticsearch (搜索引擎)"
+        echo "  14. Logstash (日志收集)"
+        echo "   15. Kibana (可视化)"
+        echo "  16. HFish蜜罐 (安全检测)"
+        echo "  ────────────────────────────────────────────"
+
+        local sel
+        read -r -p "$(printf "%b请选择: %b" "${GREEN}" "${NC}")" sel
+
+        local all_mw=(
+            "Redis|redis|6.2|7.4"
+            "Memcached|memcached|1.6|1.6"
+            "RabbitMQ|rabbitmq-server|3.8|4.0"
+            "Apache|httpd|2.4.37|2.4.63"
+            "Nginx|nginx|1.20|1.27"
+            "Tomcat|tomcat|9.0|10.1"
+            "Node.js|nodejs|16|22"
+            "Python3|python3|3.8|3.13"
+            "Go|golang|1.19|1.24"
+            "OpenJDK|java-17-openjdk|17|21"
+            "PostgreSQL|postgresql-server|12|17"
+            "MongoDB|mongodb-org|6.0|8.0"
+            "Elasticsearch|elasticsearch|7.17|8.17"
+            "Logstash|logstash|7.17|8.17"
+            "Kibana|kibana|7.17|8.17"
+            "HFish|hfish-server|3.3|4.0"
+        )
+
+        for s in $sel; do
+            if [ "$s" -ge 1 ] 2>/dev/null && [ "$s" -le "${#all_mw[@]}" ]; then
+                mw_list+=("${all_mw[$((s - 1))]}")
+            fi
+        done
+
+        if [ ${#mw_list[@]} -eq 0 ]; then
+            Show 1 "未选择任何中间件"
+            return 1
+        fi
+    fi
+
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "  安装计划（${#mw_list[@]} 个中间件，从低版本到高版本）:"
+    echo "  ────────────────────────────────────────────"
+    local idx=1
+    for mw in "${mw_list[@]}"; do
+        IFS='|' read -r name pkg min_ver latest_ver <<< "$mw"
+        printf "  %2d. %-16s %s → %s\n" "$idx" "$name" "$min_ver" "$latest_ver"
+        ((idx++))
+    done
+    echo "  ────────────────────────────────────────────"
+    printf "%b\n" "${GREEN_LINE}"
+
+    local confirm
+    read -r -p "$(printf "%b确认安装? (y/n, 默认y): %b" "${GREEN}" "${NC}")" confirm
+    [[ "${confirm:-y}" =~ ^[Yy] ]] || { Show 2 "安装已取消"; return 0; }
+
+    local success_count=0
+    local fail_count=0
+    local -a failed_pkgs=()
+
+    for mw in "${mw_list[@]}"; do
+        IFS='|' read -r name pkg min_ver latest_ver <<< "$mw"
+
+        local actual_pkg="$pkg"
+        case "$PKG_MANAGER" in
+            apt-get)
+                case "$pkg" in
+                    httpd) actual_pkg="apache2" ;;
+                    golang) actual_pkg="golang-go" ;;
+                    postgresql-server) actual_pkg="postgresql" ;;
+                    java-17-openjdk) actual_pkg="default-jdk" ;;
+                    tomcat) actual_pkg="tomcat9" ;;
+                esac
+                ;;
+        esac
+
+        if _install_mw_package "$name" "$actual_pkg" "$min_ver" "$latest_ver"; then
+            ((success_count++))
+        else
+            ((fail_count++))
+            failed_pkgs+=("$name")
+        fi
+    done
+
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "  中间件安装完成"
+    echo "  ────────────────────────────────────────────"
+    echo "  成功: ${success_count}  失败: ${fail_count}"
+    if [ ${#failed_pkgs[@]} -gt 0 ]; then
+        echo "  失败列表: ${failed_pkgs[*]}"
+    fi
+    echo ""
+    echo "  日志: ${LOG_FILE}"
+    echo "  验证: 各组件 --version / systemctl status <服务名>"
+    printf "%b\n" "${GREEN_LINE}"
+
+    log "INFO" "中间件批量安装完成 - 成功:${success_count} 失败:${fail_count}"
+}
+
+install_hfish() {
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "          安装 HFish 蜜罐系统"
+    printf "%b\n" "${GREEN_LINE}"
+    echo ""
+
+    if [ "$EUID" -ne 0 ]; then
+        Show 1 "请使用root用户运行"
+        return 1
+    fi
+
+    echo "  HFish是开源的蜜罐系统(B/S架构)"
+    echo "  管理端: Web界面(端口4433) + 节点通信(端口4434)"
+    echo ""
+    echo "  1. 在线安装 (推荐，需联网)"
+    echo "  2. 离线安装 (使用本地安装包)"
+    echo "  0. 返回"
+    echo ""
+
+    local hfish_choice
+    read -r -p "$(printf "%b请选择(0-2): %b" "${GREEN}" "${NC}")" hfish_choice
+    hfish_choice=${hfish_choice:-0}
+
+    case "$hfish_choice" in
+        0) return 0 ;;
+        1) local mode="online" ;;
+        2) local mode="offline" ;;
+        *) Show 1 "无效选择"; return 1 ;;
+    esac
+
+    Show 2 "配置防火墙端口..."
+    if command -v firewall-cmd &>/dev/null; then
+        firewall-cmd --add-port=4433/tcp --permanent 2>/dev/null || true
+        firewall-cmd --add-port=4434/tcp --permanent 2>/dev/null || true
+        firewall-cmd --reload 2>/dev/null || true
+        Show 0 "防火墙已放行: TCP/4433(管理界面) TCP/4434(节点通信)"
+    elif command -v ufw &>/dev/null; then
+        ufw allow 4433/tcp 2>/dev/null || true
+        ufw allow 4434/tcp 2>/dev/null || true
+        Show 0 "UFW已放行: TCP/4433 TCP/4434"
+    else
+        Show 3 "未检测到防火墙工具，请手动放行端口4433/4434"
+    fi
+
+    if [ "$mode" = "online" ]; then
+        Show 2 "在线安装HFish..."
+        if ! command -v curl &>/dev/null; then
+            Show 2 "安装curl..."
+            $PKG_MANAGER install -y curl 2>/dev/null || true
+        fi
+
+        Show 2 "下载并执行HFish安装脚本..."
+        if curl -sS -L https://hfish.net/webinstall.sh -o /tmp/hfish_install.sh 2>/dev/null; then
+            bash /tmp/hfish_install.sh
+            local install_rc=$?
+            rm -f /tmp/hfish_install.sh 2>/dev/null
+
+            if [ $install_rc -eq 0 ]; then
+                Show 0 "HFish在线安装完成"
+            else
+                Show 1 "HFish在线安装失败(退出码: ${install_rc})"
+                return 1
+            fi
+        else
+            Show 1 "无法下载HFish安装脚本，请检查网络"
+            Show 2 "可尝试离线安装模式"
+            return 1
+        fi
+    else
+        Show 2 "离线安装HFish..."
+        local hfish_pkg=""
+        local search_paths=(
+            "/root/LinuxEnvConfig/hfish-*-linux-amd64.tgz"
+            "/root/LinuxEnvConfig/hfish-*-linux-*.tgz"
+            "/root/hfish-*-linux-amd64.tgz"
+            "/opt/hfish-*-linux-amd64.tgz"
+        )
+
+        for sp in "${search_paths[@]}"; do
+            local found
+            found=$(ls $sp 2>/dev/null | head -1)
+            if [ -n "$found" ]; then
+                hfish_pkg="$found"
+                break
+            fi
+        done
+
+        if [ -z "$hfish_pkg" ]; then
+            echo ""
+            Show 2 "未找到HFish离线安装包，请输入安装包路径:"
+            read -r -p "$(printf "%b路径: %b" "${GREEN}" "${NC}")" hfish_pkg
+            if [ ! -f "$hfish_pkg" ]; then
+                Show 1 "安装包不存在: $hfish_pkg"
+                return 1
+            fi
+        fi
+
+        Show 0 "找到安装包: $hfish_pkg"
+
+        Show 2 "创建安装目录 /opt/hfish..."
+        mkdir -p /opt/hfish
+
+        Show 2 "解压安装包..."
+        tar zxvf "$hfish_pkg" -C /opt/hfish/
+        if [ $? -ne 0 ]; then
+            Show 1 "解压失败，请检查安装包格式"
+            return 1
+        fi
+        Show 0 "解压完成"
+
+        Show 2 "执行安装脚本..."
+        cd /opt/hfish/ || { Show 1 "无法进入目录 /opt/hfish/"; return 1; }
+
+        if [ -f "./install.sh" ]; then
+            bash ./install.sh
+            if [ $? -eq 0 ]; then
+                Show 0 "HFish离线安装完成"
+            else
+                Show 1 "HFish安装脚本执行失败"
+                cd - >/dev/null || true
+                return 1
+            fi
+        else
+            Show 2 "未找到install.sh，尝试直接启动..."
+            if [ -f "./hfish" ]; then
+                chmod +x ./hfish
+                Show 0 "HFish二进制已就绪"
+            else
+                Show 1 "未找到HFish可执行文件"
+                cd - >/dev/null || true
+                return 1
+            fi
+        fi
+
+        cd - >/dev/null || true
+    fi
+
+    Show 2 "验证HFish安装..."
+    sleep 3
+
+    if [ -d "/opt/hfish" ]; then
+        Show 0 "安装目录: /opt/hfish"
+    fi
+
+    local hfish_running=false
+    if command -v systemctl &>/dev/null && systemctl is-active --quiet hfish 2>/dev/null; then
+        hfish_running=true
+    elif pgrep -f "hfish" &>/dev/null; then
+        hfish_running=true
+    fi
+
+    if [ "$hfish_running" = "true" ]; then
+        Show 0 "HFish服务运行中"
+    else
+        Show 3 "HFish服务未检测到运行，可能需要手动启动"
+    fi
+
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    echo "  HFish 蜜罐系统安装完成"
+    echo "  ──────────────────────────────────"
+    echo "  管理界面: https://0.0.0.0:4433"
+    echo "  节点通信: TCP/4434"
+    echo "  安装目录: /opt/hfish"
+    echo "  默认账号: admin"
+    echo "  默认密码: HFish2021"
+    echo ""
+    echo "  启动: cd /opt/hfish && ./hfish start"
+    echo "  状态: cd /opt/hfish && ./hfish status"
+    echo "  停止: cd /opt/hfish && ./hfish stop"
+    echo "  日志: /opt/hfish/log/"
+    echo "  文档: https://hfish.net/docs/"
+    echo ""
+    echo "  安全提示: 请立即修改默认密码!"
+    printf "%b\n" "${GREEN_LINE}"
+
+    log "INFO" "HFish蜜罐系统安装完成 (模式: ${mode})"
+}
+
+main() {
+    trap cleanup EXIT
+
+    printf "%b\n" "${GREEN_LINE}"
+    echo '          Linux 系统安全配置脚本'
+    echo "          版本: $SCRIPT_VERSION"
+    printf "%b\n" "${GREEN_LINE}"
+    echo ""
+
+    if [ "$(id -u)" -ne 0 ]; then
+        Show 1 "请使用root用户或sudo运行此脚本"
+        exit 1
+    fi
+
+    mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+    mkdir -p "$BACKUP_DIR" 2>/dev/null || true
+
+    log "INFO" "========== 脚本开始执行 =========="
+
+    detect_os
+    detect_firewall
+
+    local main_done=false
+    while [ "$main_done" != "true" ]; do
+    echo ""
+    printf "%b[+] 请选择要执行的配置�?%b\n" "${YELLOW}" "${NC}"
+    echo "1. 完整配置（root密码 + SSH安装配置 + 安全加固�?）"
+    echo "2. 仅配置root密码"
+    echo "3. 仅配置SSH服务"
+    echo "4. 仅配置SELinux和防火墙"
+    echo "5. 执行所有配置项（非交互式，使用默认值）"
+    echo "6. 安装小皮面板 (PhpStudy)"
+    echo "7. 安装宝塔面板"
+    echo "8. 安装JumpServer堡垒�?"
+    echo "9. JumpServer管理"
+    echo "10. WAF管理"
+    echo "11. System Diagnostics"
+    echo "12. 安装Docker"
+    echo "13. 安装LAMP/LNMP环境"
+    echo "14. 安装中间件(含HFish蜜罐)"
+    echo "0. 退出程序"
+    read -r -p "$(printf "%b请选择(0-14, 默认1): %b\n" "${GREEN}" "${NC}")" main_choice
+    main_choice=${main_choice:-1}
+
+    case $main_choice in
+        0)
+            Show 2 "用户选择退出程序"
+            log "INFO" "用户正常退出"
+            main_done=true
+            exit 0
+            ;;
+        1)
+            configure_root_password
+            echo ""
+            if [ "$DISTRO_FAMILY" = "rhel" ]; then
+                configure_selinux
+                echo ""
+                configure_firewall_service
+                echo ""
+            fi
+            install_ssh
+            echo ""
+            generate_ssh_keys
+            echo ""
+            configure_ssh
+            echo ""
+            install_fail2ban
+            echo ""
+            restart_and_enable_ssh
+            main_done=true
+            ;;
+        2)
+            configure_root_password
+            main_done=true
+            ;;
+        3)
+            install_ssh
+            echo ""
+            generate_ssh_keys
+            echo ""
+            configure_ssh
+            echo ""
+            install_fail2ban
+            echo ""
+            restart_and_enable_ssh
+            main_done=true
+            ;;
+        4)
+            if [ "$DISTRO_FAMILY" = "rhel" ]; then
+                configure_selinux
+            else
+                Show 2 "当前系统非RHEL家族，跳过SELinux配置"
+            fi
+            echo ""
+            configure_firewall_service
+            main_done=true
+            ;;
+        5)
+            Show 2 "执行非交互式完整配置（使用默认安全值）..."
+            Show 2 "配置root密码（需要交互输入）..."
+            configure_root_password
+            echo ""
+            if [ "$DISTRO_FAMILY" = "rhel" ]; then
+                Show 2 "配置SELinux为permissive模式..."
+                if [ -f /etc/selinux/config ]; then
+                    backup_file /etc/selinux/config
+                    sed -i 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config
+                    setenforce 0 2>/dev/null || true
+                fi
+                Show 0 "SELinux已设置为permissive"
+            fi
+            echo ""
+            install_ssh
+            echo ""
+            backup_file /etc/ssh/sshd_config
+            cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+            local sshd_config="/etc/ssh/sshd_config"
+            sed -i 's/^#\?Port .*/Port 22/' "$sshd_config"
+            sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' "$sshd_config"
+            sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication yes/' "$sshd_config"
+            sed -i 's/^#\?PubkeyAuthentication .*/PubkeyAuthentication yes/' "$sshd_config"
+            sed -i 's/^#\?MaxAuthTries .*/MaxAuthTries 4/' "$sshd_config"
+            sed -i 's/^#\?LoginGraceTime .*/LoginGraceTime 60/' "$sshd_config"
+            sed -i 's/^#\?PermitEmptyPasswords .*/PermitEmptyPasswords no/' "$sshd_config"
+            sed -i 's/^#\?X11Forwarding .*/X11Forwarding no/' "$sshd_config"
+            sed -i 's/^#\?ClientAliveInterval .*/ClientAliveInterval 300/' "$sshd_config"
+            sed -i 's/^#\?ClientAliveCountMax .*/ClientAliveCountMax 2/' "$sshd_config"
+            sed -i 's/^#\?AllowTcpForwarding .*/AllowTcpForwarding no/' "$sshd_config"
+            sed -i 's/^#\?GatewayPorts .*/GatewayPorts no/' "$sshd_config"
+            sed -i 's/^#\?StrictModes .*/StrictModes yes/' "$sshd_config"
+            for setting in "Port 22" "PermitRootLogin no" "PasswordAuthentication yes" "PubkeyAuthentication yes" "MaxAuthTries 4" "LoginGraceTime 60" "PermitEmptyPasswords no" "X11Forwarding no" "ClientAliveInterval 300" "ClientAliveCountMax 2" "AllowTcpForwarding no" "GatewayPorts no" "StrictModes yes"; do
+                local key
+                key=$(echo "$setting" | awk '{print $1}')
+                if ! grep -q "^$key " "$sshd_config"; then
+                    echo "$setting" >> "$sshd_config"
+                fi
+            done
+            open_firewall_port "22" "tcp"
+            Show 0 "SSH安全配置完成（默认安全值）"
+            echo ""
+            install_fail2ban
+            echo ""
+            restart_and_enable_ssh
+            main_done=true
+            ;;
+        6)
+            install_xp_panel
+            main_done=true
+            ;;
+        7)
+            install_bt_panel
+            main_done=true
+            ;;
+        8)
+            install_jumpserver
+            main_done=true
+            ;;
+        9)
+            manage_jumpserver
+            main_done=true
+            ;;
+        10)
+            manage_safeline_waf
+            main_done=true
+            ;;
+        11)
+            diagnostics
+            main_done=true
+            ;;
+        12)
+            install_docker
+            main_done=true
+            ;;
+        13)
+            install_lamp_lnmp
+            main_done=true
+            ;;
+        14)
+            install_middleware
+            main_done=true
+            ;;
+        *)
+            Show 3 "无效的选择，请重新输入"
+            ;;
+    esac
+    done
+
+    show_ssh_summary
+
+    echo ""
+    printf "%b\n" "${GREEN_LINE}"
+    Show 0 "===== 系统安全配置完成 ====="
+    printf "%b\n" "${GREEN_LINE}"
+    echo ""
+    Show 2 "配置备份目录: $BACKUP_DIR"
+    Show 2 "日志文件: $LOG_FILE"
+    Show 3 "建议: 重启系统后验证SSH连接是否正常，再关闭当前会话"
+
+    log "INFO" "========== 脚本执行完成 =========="
+}
+
+main "$@"
+
+_all_1_completion() {
+    local cur prev opts
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    opts="1 2 3 4 5 6 7 8 9 10 11 12 0 --help --version --debug --log"
+
+    if [ "${prev}" = "$0" ] || [ "${prev}" = "bash" ] || [ -z "${prev}" ]; then
+        mapfile -t COMPREPLY < <(compgen -W "${opts}" -- "${cur}")
+    else
+        mapfile -t COMPREPLY < <(compgen -W "--help" -- "${cur}")
+    fi
+    return 0
+}
+
+complete -F _all_1_completion ./all_1.sh 2>/dev/null || true
+complete -F _all_1_completion all_1.sh 2>/dev/null || true
+
+main "$@"
